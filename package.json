@@ -1,0 +1,49 @@
+{
+  "name": "prompt-router",
+  "version": "0.1.0",
+  "description": "Route your prompts to the right AI: coding tasks to Claude Code, simple questions to your local model, deep questions to OpenRouter — with prompt optimization built in.",
+  "type": "module",
+  "bin": {
+    "prompt-router": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "router",
+    "llm",
+    "openrouter",
+    "lm-studio",
+    "prompt",
+    "ai",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "Ege",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PTB-0/prompt-router"
+  }
+}
