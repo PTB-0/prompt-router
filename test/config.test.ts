@@ -10,6 +10,9 @@ describe("resolveConfig", () => {
     expect(cfg.openrouter.classifierModels.length).toBeGreaterThan(0);
     expect(cfg.openrouter.apiKey).toBeUndefined();
     expect(cfg.logging.routingLog).toBe(false);
+    expect(cfg.modelSelection.enabled).toBe(true);
+    expect(cfg.thresholds.modelTierLow).toBe(0.35);
+    expect(cfg.thresholds.modelTierHigh).toBe(0.7);
   });
 
   test("config file values override defaults without wiping siblings", () => {
@@ -34,5 +37,23 @@ describe("resolveConfig", () => {
 
   test("ignores a malformed config file", () => {
     expect(resolveConfig("not an object", {}).local.enabled).toBe(true);
+  });
+
+  test("modelSelection.enabled can be disabled via config file", () => {
+    expect(resolveConfig({ modelSelection: { enabled: false } }, {}).modelSelection.enabled).toBe(
+      false,
+    );
+  });
+
+  test("model tier thresholds can be overridden without wiping siblings", () => {
+    const cfg = resolveConfig({ thresholds: { modelTierLow: 0.2 } }, {});
+    expect(cfg.thresholds.modelTierLow).toBe(0.2);
+    expect(cfg.thresholds.modelTierHigh).toBe(0.7);
+  });
+
+  test("out-of-range model tier threshold falls back to the default", () => {
+    expect(resolveConfig({ thresholds: { modelTierLow: 5 } }, {}).thresholds.modelTierLow).toBe(
+      0.35,
+    );
   });
 });

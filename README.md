@@ -41,6 +41,7 @@ $ prompt-router "fix the login bug in auth.ts"
 - [Quick start](#quick-start)
 - [Usage](#usage)
 - [The plan-first pipeline](#the-plan-first-pipeline)
+- [Model & effort selection](#model--effort-selection)
 - [Local models](#local-models)
 - [Configuration](#configuration)
 - [Graceful degradation](#graceful-degradation)
@@ -119,6 +120,7 @@ prompt-router "compare event sourcing with CRUD for a bank"   # → OpenRouter
 
 prompt-router -c "and which one scales better?"   # follow-up: carries conversation memory
 prompt-router --to local "explain this simply"    # force a backend (claude | local | openrouter)
+prompt-router --model opus --effort high "..."    # force Claude Code's model/effort for one run
 prompt-router --no-route "quick edit"             # skip everything, straight to Claude Code
 prompt-router --stats                             # how much Claude usage you've saved
 prompt-router --clear-session                     # forget the stored conversation
@@ -142,6 +144,28 @@ For code tasks classified above the complexity threshold, prompt-router inserts 
 3. The approved plan is attached to your prompt, so Claude Code begins executing instead of exploring.
 
 You spend zero premium tokens on planning, and the expensive agent gets a map. This is the "make the hard work easy" half of the deal.
+
+## Model & effort selection
+
+When a task routes to Claude Code, prompt-router also picks `--model` and
+`--effort` from the same complexity score used for the plan-first decision:
+
+| Complexity | Model | Effort |
+|---|---|---|
+| below `modelTierLow` | `haiku` | `low` |
+| between the two thresholds | `sonnet` | `medium` |
+| at or above `modelTierHigh` | `opus` | `high` |
+
+A low-confidence classification escalates one tier, on the same "misrouting
+code is costly" principle the plan-first threshold uses. With no complexity
+signal at all (`--no-route`, a very short prompt, or the classifier being
+down), no flags are passed and Claude Code's own default applies.
+
+Force a one-off override for a single run with `--model`/`--effort` — either
+flag can be set independently, and the other still auto-picks. Disable
+auto-selection entirely with `"modelSelection": { "enabled": false }` in
+`config.json`. This only affects the Claude Code route; it's a no-op for the
+local/OpenRouter routes.
 
 ## Local models
 
@@ -182,9 +206,14 @@ Everything lives in `~/.config/prompt-router/` (override the directory with `PRO
       "nvidia/nemotron-3-super-120b-a12b:free"
     ]
   },
+  "modelSelection": {
+    "enabled": true              // false = never auto-pick --model/--effort for Claude Code
+  },
   "thresholds": {
     "confidence": 0.6,          // below this, the route is flagged for your attention
-    "planComplexity": 0.7       // at or above this, code tasks get the plan-first pipeline
+    "planComplexity": 0.7,      // at or above this, code tasks get the plan-first pipeline
+    "modelTierLow": 0.35,       // below this, Claude Code gets --model haiku --effort low
+    "modelTierHigh": 0.7        // at or above this, Claude Code gets --model opus --effort high
   },
   "session": { "maxMessages": 12 },
   "logging": { "routingLog": false },

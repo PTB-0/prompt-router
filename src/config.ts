@@ -17,9 +17,14 @@ export interface RouterConfig {
     autoStart: boolean;
     enabled: boolean;
   };
+  modelSelection: {
+    enabled: boolean;
+  };
   thresholds: {
     confidence: number;
     planComplexity: number;
+    modelTierLow: number;
+    modelTierHigh: number;
   };
   session: {
     maxMessages: number;
@@ -56,9 +61,14 @@ const DEFAULTS: RouterConfig = {
     autoStart: true,
     enabled: true,
   },
+  modelSelection: {
+    enabled: true,
+  },
   thresholds: {
     confidence: 0.6,
     planComplexity: 0.7,
+    modelTierLow: 0.35,
+    modelTierHigh: 0.7,
   },
   session: {
     maxMessages: 12,
@@ -114,11 +124,22 @@ export function resolveConfig(fileCfg: unknown, env: NodeJS.ProcessEnv): RouterC
   cfg.local.autoStart = pickBoolean(local["autoStart"], cfg.local.autoStart);
   cfg.local.enabled = pickBoolean(local["enabled"], cfg.local.enabled);
 
+  const modelSelection = isRecord(file["modelSelection"]) ? file["modelSelection"] : {};
+  cfg.modelSelection.enabled = pickBoolean(
+    modelSelection["enabled"],
+    cfg.modelSelection.enabled,
+  );
+
   const thresholds = isRecord(file["thresholds"]) ? file["thresholds"] : {};
   cfg.thresholds.confidence = pickScore(thresholds["confidence"], cfg.thresholds.confidence);
   cfg.thresholds.planComplexity = pickScore(
     thresholds["planComplexity"],
     cfg.thresholds.planComplexity,
+  );
+  cfg.thresholds.modelTierLow = pickScore(thresholds["modelTierLow"], cfg.thresholds.modelTierLow);
+  cfg.thresholds.modelTierHigh = pickScore(
+    thresholds["modelTierHigh"],
+    cfg.thresholds.modelTierHigh,
   );
 
   const session = isRecord(file["session"]) ? file["session"] : {};

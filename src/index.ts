@@ -14,9 +14,11 @@ import { ensureLocalServer } from "./local.js";
 import { appendRoutingLog } from "./log.js";
 import { attachPlan, generatePlan } from "./plan.js";
 import { decideRoute } from "./route.js";
+import { pickModelTier } from "./tier.js";
+import { buildClaudeArgs } from "./claudeArgs.js";
 import { appendToSession, clearSession, loadSession } from "./session.js";
 import { formatStats, loadStats, recordRoute } from "./stats.js";
-import type { RouteDecision, RouteTarget } from "./types.js";
+import type { Classification, EffortLevel, RouteDecision, RouteTarget } from "./types.js";
 import { toShellArgs } from "./winShell.js";
 import {
   askPlanChoice,
@@ -36,6 +38,8 @@ const USAGE = `Usage: prompt-router "your prompt"
   init                 interactive setup wizard
   -c, --continue       carry the previous conversation into this one
       --to <target>    force a backend: claude | local | openrouter
+      --model <name>   force the Claude Code model for this run (e.g. opus, sonnet, haiku)
+      --effort <level> force the Claude Code effort for this run: low | medium | high | xhigh | max
       --no-route       skip optimization and routing, go straight to Claude Code
       --stats          show routing statistics
       --clear-session  forget the stored conversation
@@ -46,6 +50,8 @@ interface CliArgs {
   continueSession: boolean;
   noRoute: boolean;
   forceTarget: RouteTarget | null;
+  forceModel: string | null;
+  forceEffort: EffortLevel | null;
   showStats: boolean;
   clear: boolean;
 }
@@ -56,6 +62,8 @@ function parseArgs(argv: string[]): CliArgs {
     continueSession: false,
     noRoute: false,
     forceTarget: null,
+    forceModel: null,
+    forceEffort: null,
     showStats: false,
     clear: false,
   };
@@ -73,6 +81,29 @@ function parseArgs(argv: string[]): CliArgs {
         args.forceTarget = target;
       } else {
         process.stderr.write("prompt-router: --to expects claude | local | openrouter\n");
+        process.exit(1);
+      }
+    } else if (arg === "--model") {
+      const model = argv[++i];
+      if (!model) {
+        process.stderr.write("prompt-router: --model expects a model name\n");
+        process.exit(1);
+      }
+      args.forceModel = model;
+    } else if (arg === "--effort") {
+      const effort = argv[++i];
+      if (
+        effort === "low" ||
+        effort === "medium" ||
+        effort === "high" ||
+        effort === "xhigh" ||
+        effort === "max"
+      ) {
+        args.forceEffort = effort;
+      } else {
+        process.stderr.write(
+          "prompt-router: --effort expects low | medium | high | xhigh | max\n",
+        );
         process.exit(1);
       }
     } else parts.push(arg);
@@ -97,17 +128,27 @@ function detectCodeProject(): boolean {
   return PROJECT_MARKERS.some((marker) => fs.existsSync(path.join(process.cwd(), marker)));
 }
 
-function routeDetail(target: RouteTarget, config: RouterConfig): string {
+function routeDetail(target: RouteTarget, config: RouterConfig, decision: RouteDecision): string {
   if (target === "local") return `${TARGET_LABELS.local} (${config.local.model})`;
   if (target === "openrouter") {
     return `${TARGET_LABELS.openrouter} (${config.openrouter.answerModels[0] ?? "free model"})`;
   }
+  if (decision.model || decision.effort) {
+    const parts = [decision.model, decision.effort ? `effort: ${decision.effort}` : undefined]
+      .filter((part): part is string => part !== undefined);
+    return `${TARGET_LABELS.claude} (${parts.join(", ")})`;
+  }
   return TARGET_LABELS.claude;
 }
 
-function runClaude(text: string, continueSession: boolean): never {
+function runClaude(
+  text: string,
+  continueSession: boolean,
+  model?: string,
+  effort?: EffortLevel,
+): never {
   const useShell = process.platform === "win32";
-  const claudeArgs = toShellArgs(continueSession ? ["-c", text] : [text], useShell);
+  const claudeArgs = toShellArgs(buildClaudeArgs(text, continueSession, model, effort), useShell);
   const result = spawnSync("claude", claudeArgs, {
     stdio: "inherit",
     shell: useShell,
@@ -144,6 +185,26 @@ function logRouting(config: RouterConfig, decision: RouteDecision): void {
   });
 }
 
+function withModelTier(
+  decision: RouteDecision,
+  cls: Classification | null,
+  config: RouterConfig,
+  args: CliArgs,
+): RouteDecision {
+  if (decision.target !== "claude") return decision;
+  const auto = config.modelSelection.enabled
+    ? pickModelTier(cls?.complexity ?? null, decision.uncertain, {
+        lowThreshold: config.thresholds.modelTierLow,
+        highThreshold: config.thresholds.modelTierHigh,
+      })
+    : null;
+  return {
+    ...decision,
+    model: args.forceModel ?? auto?.model,
+    effort: args.forceEffort ?? auto?.effort,
+  };
+}
+
 async function runClaudeRoute(
   prompt: string,
   decision: RouteDecision,
@@ -166,7 +227,7 @@ async function runClaudeRoute(
       showPassThrough("plan generation unavailable — sending the prompt without a plan");
     }
   }
-  runClaude(finalPrompt, args.continueSession);
+  runClaude(finalPrompt, args.continueSession, decision.model, decision.effort);
 }
 
 async function runChatRoute(
@@ -206,7 +267,7 @@ async function runChatRoute(
   if (answer === null) {
     if (!config.openrouter.apiKey) {
       showPassThrough("no OPENROUTER_API_KEY — handing off to Claude Code");
-      runClaude(prompt, args.continueSession);
+      runClaude(prompt, args.continueSession, args.forceModel ?? undefined, args.forceEffort ?? undefined);
     }
     answer = await withModelFallback(config.openrouter.answerModels, async (model) => {
       let wrote = false;
@@ -232,7 +293,7 @@ async function runChatRoute(
 
   if (answer === null) {
     showPassThrough("all answer backends failed — handing off to Claude Code");
-    runClaude(prompt, args.continueSession);
+    runClaude(prompt, args.continueSession, args.forceModel ?? undefined, args.forceEffort ?? undefined);
   }
 
   process.stdout.write("\n");
@@ -272,7 +333,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
 
   if (args.noRoute || args.prompt.length < MIN_PROMPT_LENGTH) {
-    runClaude(args.prompt, args.continueSession);
+    runClaude(args.prompt, args.continueSession, args.forceModel ?? undefined, args.forceEffort ?? undefined);
   }
 
   const heuristic = heuristicCategory(args.prompt, { inCodeProject: detectCodeProject() });
@@ -290,21 +351,33 @@ async function main(): Promise<void> {
         planComplexityThreshold: config.thresholds.planComplexity,
         localAvailable: config.local.enabled,
       });
+  decision = withModelTier(decision, cls, config, args);
 
   let finalPrompt = cls?.optimizedPrompt ?? args.prompt;
 
   if (!args.forceTarget) {
-    showRouting(args.prompt, finalPrompt, decision, routeDetail(decision.target, config), cls);
+    showRouting(
+      args.prompt,
+      finalPrompt,
+      decision,
+      routeDetail(decision.target, config, decision),
+      cls,
+    );
     const choice = await askRouteChoice();
     process.stderr.write("\n");
     if (choice.action === "reject") finalPrompt = args.prompt;
     else if (choice.action === "edit") finalPrompt = openInEditor(finalPrompt);
     if (choice.overrideTarget) {
-      decision = {
-        ...decision,
-        target: choice.overrideTarget,
-        planFirst: choice.overrideTarget === "claude" ? decision.planFirst : false,
-      };
+      decision = withModelTier(
+        {
+          ...decision,
+          target: choice.overrideTarget,
+          planFirst: choice.overrideTarget === "claude" ? decision.planFirst : false,
+        },
+        cls,
+        config,
+        args,
+      );
     }
   }
 
