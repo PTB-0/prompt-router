@@ -11,6 +11,8 @@ export interface ChatRequest {
   maxTokens?: number;
   timeoutMs: number;
   fetchImpl?: typeof fetch;
+  /** Called with a content-free reason (e.g. "http_404", "AbortError") when the request fails. */
+  onFailure?: (reason: string) => void;
 }
 
 function buildHeaders(apiKey: string | undefined): Record<string, string> {
@@ -102,9 +104,13 @@ export async function chatCompletion(req: ChatRequest): Promise<string | null> {
       }),
       signal: controller.signal,
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      req.onFailure?.(`http_${response.status}`);
+      return null;
+    }
     return messageContent(await response.json());
-  } catch {
+  } catch (err) {
+    req.onFailure?.(err instanceof Error ? err.name : "unknown_error");
     return null;
   } finally {
     clearTimeout(timer);
@@ -132,7 +138,10 @@ export async function streamChat(
     });
     // The timeout guards the connection; once headers arrive the stream may run long.
     clearTimeout(timer);
-    if (!response.ok || !response.body) return null;
+    if (!response.ok || !response.body) {
+      req.onFailure?.(!response.ok ? `http_${response.status}` : "no_response_body");
+      return null;
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -150,7 +159,8 @@ export async function streamChat(
       }
     }
     return full || null;
-  } catch {
+  } catch (err) {
+    req.onFailure?.(err instanceof Error ? err.name : "unknown_error");
     return null;
   } finally {
     clearTimeout(timer);

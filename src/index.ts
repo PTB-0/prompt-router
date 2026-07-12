@@ -8,8 +8,10 @@ import pc from "picocolors";
 import { classify } from "./classify.js";
 import { configDir, loadConfig, type RouterConfig } from "./config.js";
 import { heuristicCategory } from "./heuristics.js";
+import { runInit } from "./init.js";
 import { streamChat, withModelFallback, type ChatMessage } from "./llm.js";
 import { ensureLocalServer } from "./local.js";
+import { appendRoutingLog } from "./log.js";
 import { attachPlan, generatePlan } from "./plan.js";
 import { decideRoute } from "./route.js";
 import { appendToSession, clearSession, loadSession } from "./session.js";
@@ -31,6 +33,7 @@ const MIN_PROMPT_LENGTH = 10;
 const ANSWER_TIMEOUT_FLOOR_MS = 30_000;
 
 const USAGE = `Usage: prompt-router "your prompt"
+  init                 interactive setup wizard
   -c, --continue       carry the previous conversation into this one
       --to <target>    force a backend: claude | local | openrouter
       --no-route       skip optimization and routing, go straight to Claude Code
@@ -134,22 +137,11 @@ function openInEditor(content: string): string {
 function logRouting(config: RouterConfig, decision: RouteDecision): void {
   // Opt-in and content-free by design: categories and targets only, never the prompt.
   if (!config.logging.routingLog) return;
-  try {
-    const dir = configDir();
-    fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(
-      path.join(dir, "routing-log.jsonl"),
-      JSON.stringify({
-        ts: new Date().toISOString(),
-        target: decision.target,
-        planFirst: decision.planFirst,
-        uncertain: decision.uncertain,
-      }) + "\n",
-      "utf8",
-    );
-  } catch {
-    // logging must never break routing
-  }
+  appendRoutingLog(configDir(), {
+    target: decision.target,
+    planFirst: decision.planFirst,
+    uncertain: decision.uncertain,
+  });
 }
 
 async function runClaudeRoute(
@@ -255,6 +247,11 @@ async function runChatRoute(
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === "init") {
+    await runInit();
+    return;
+  }
+
   const args = parseArgs(process.argv.slice(2));
   const dir = configDir();
 

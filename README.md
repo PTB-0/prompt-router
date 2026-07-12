@@ -90,7 +90,13 @@ Requires Node.js ≥ 18 and the [Claude Code CLI](https://claude.com/claude-code
 
 ## Quick start
 
-**1.** Get a free API key at [openrouter.ai](https://openrouter.ai) and create `~/.config/prompt-router/.env`:
+**1.** Run the setup wizard — it asks for your OpenRouter key, probes for a local model, and writes the config for you:
+
+```bash
+prompt-router init
+```
+
+Prefer to do it by hand? Get a free API key at [openrouter.ai](https://openrouter.ai) and create `~/.config/prompt-router/.env`:
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxx
@@ -161,19 +167,19 @@ Everything lives in `~/.config/prompt-router/` (override the directory with `PRO
   "openrouter": {
     "baseUrl": "https://openrouter.ai/api/v1",
     "classifierModels": [       // fallback chains — first healthy model wins
-      "meta-llama/llama-3.1-8b-instruct:free",
-      "google/gemma-2-9b-it:free",
-      "mistralai/mistral-7b-instruct:free"
+      "openai/gpt-oss-20b:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "meta-llama/llama-3.2-3b-instruct:free"
     ],
     "answerModels": [
-      "meta-llama/llama-3.3-70b-instruct:free",
-      "deepseek/deepseek-chat:free",
-      "google/gemma-2-9b-it:free"
+      "openai/gpt-oss-120b:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "qwen/qwen3-next-80b-a3b-instruct:free"
     ],
     "planModels": [
-      "meta-llama/llama-3.3-70b-instruct:free",
-      "deepseek/deepseek-chat:free",
-      "meta-llama/llama-3.1-8b-instruct:free"
+      "openai/gpt-oss-120b:free",
+      "qwen/qwen3-coder:free",
+      "nvidia/nemotron-3-super-120b-a12b:free"
     ]
   },
   "thresholds": {
@@ -231,7 +237,7 @@ Built test-first: every routing rule in `src/route.ts` and every heuristic in `s
 
 ## Roadmap
 
-- [ ] `prompt-router init` — interactive setup wizard
+- [x] `prompt-router init` — interactive setup wizard
 - [ ] npm publish with GitHub Actions provenance
 - [ ] Reuse [prompt-op](https://github.com/PTB-0/prompt-op)'s optimizer as a library dependency
 - [ ] Per-backend capability manifests

@@ -1,5 +1,7 @@
+import { configDir } from "./config.js";
 import type { RouterConfig } from "./config.js";
 import { chatCompletion, withModelFallback } from "./llm.js";
+import { appendRoutingLog } from "./log.js";
 
 const PLAN_SYSTEM_PROMPT = `You are a senior software architect. The user's prompt will be executed by Claude Code, an agentic coding assistant. Write a concise implementation plan it can follow.
 
@@ -14,7 +16,8 @@ const PLAN_TIMEOUT_FLOOR_MS = 20_000;
 
 export async function generatePlan(prompt: string, config: RouterConfig): Promise<string | null> {
   if (!config.openrouter.apiKey) return null;
-  return withModelFallback(config.openrouter.planModels, (model) =>
+  const failures: { model: string; reason: string }[] = [];
+  const result = await withModelFallback(config.openrouter.planModels, (model) =>
     chatCompletion({
       baseUrl: config.openrouter.baseUrl,
       apiKey: config.openrouter.apiKey,
@@ -25,8 +28,13 @@ export async function generatePlan(prompt: string, config: RouterConfig): Promis
       ],
       maxTokens: 2048,
       timeoutMs: Math.max(config.timeoutMs, PLAN_TIMEOUT_FLOOR_MS),
+      onFailure: (reason) => failures.push({ model, reason }),
     }),
   );
+  if (!result && config.logging.routingLog && failures.length > 0) {
+    appendRoutingLog(configDir(), { type: "plan_failed", failures });
+  }
+  return result;
 }
 
 export function attachPlan(prompt: string, plan: string): string {

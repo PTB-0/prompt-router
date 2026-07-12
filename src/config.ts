@@ -35,19 +35,19 @@ const DEFAULTS: RouterConfig = {
     baseUrl: "https://openrouter.ai/api/v1",
     apiKey: undefined,
     classifierModels: [
-      "meta-llama/llama-3.1-8b-instruct:free",
-      "google/gemma-2-9b-it:free",
-      "mistralai/mistral-7b-instruct:free",
+      "openai/gpt-oss-20b:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "meta-llama/llama-3.2-3b-instruct:free",
     ],
     answerModels: [
-      "meta-llama/llama-3.3-70b-instruct:free",
-      "deepseek/deepseek-chat:free",
-      "google/gemma-2-9b-it:free",
+      "openai/gpt-oss-120b:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "qwen/qwen3-next-80b-a3b-instruct:free",
     ],
     planModels: [
-      "meta-llama/llama-3.3-70b-instruct:free",
-      "deepseek/deepseek-chat:free",
-      "meta-llama/llama-3.1-8b-instruct:free",
+      "openai/gpt-oss-120b:free",
+      "qwen/qwen3-coder:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
     ],
   },
   local: {

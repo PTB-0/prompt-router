@@ -1,5 +1,7 @@
+import { configDir } from "./config.js";
 import type { RouterConfig } from "./config.js";
 import { chatCompletion, withModelFallback } from "./llm.js";
+import { appendRoutingLog } from "./log.js";
 import type { Category, Classification } from "./types.js";
 
 export const CLASSIFY_SYSTEM_PROMPT = `You are the routing brain of prompt-router, a CLI that optimizes a prompt and routes it to the right AI backend.
@@ -63,7 +65,8 @@ export async function classify(
   config: RouterConfig,
 ): Promise<Classification | null> {
   if (!config.openrouter.apiKey) return null;
-  return withModelFallback(config.openrouter.classifierModels, async (model) => {
+  const failures: { model: string; reason: string }[] = [];
+  const result = await withModelFallback(config.openrouter.classifierModels, async (model) => {
     const raw = await chatCompletion({
       baseUrl: config.openrouter.baseUrl,
       apiKey: config.openrouter.apiKey,
@@ -74,7 +77,15 @@ export async function classify(
       ],
       maxTokens: 1024,
       timeoutMs: config.timeoutMs,
+      onFailure: (reason) => failures.push({ model, reason }),
     });
-    return raw ? parseClassification(raw) : null;
+    if (!raw) return null;
+    const parsed = parseClassification(raw);
+    if (!parsed) failures.push({ model, reason: "unparseable_response" });
+    return parsed;
   });
+  if (!result && config.logging.routingLog && failures.length > 0) {
+    appendRoutingLog(configDir(), { type: "classify_failed", failures });
+  }
+  return result;
 }

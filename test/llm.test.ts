@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { extractSseDeltas, withModelFallback } from "../src/llm.js";
+import { chatCompletion, extractSseDeltas, streamChat, withModelFallback } from "../src/llm.js";
 
 describe("withModelFallback", () => {
   test("returns the first successful result", async () => {
@@ -22,6 +22,55 @@ describe("withModelFallback", () => {
       return "ok";
     });
     expect(result).toBe("ok");
+  });
+});
+
+describe("chatCompletion onFailure", () => {
+  test("reports the HTTP status when the response is not ok", async () => {
+    const reasons: string[] = [];
+    const fetchImpl = (async () =>
+      new Response("model not found", { status: 404 })) as unknown as typeof fetch;
+    const result = await chatCompletion({
+      baseUrl: "https://example.test",
+      model: "m",
+      messages: [],
+      timeoutMs: 1000,
+      fetchImpl,
+      onFailure: (reason) => reasons.push(reason),
+    });
+    expect(result).toBeNull();
+    expect(reasons).toEqual(["http_404"]);
+  });
+
+  test("reports the error name when the request throws", async () => {
+    const reasons: string[] = [];
+    const fetchImpl = (async () => {
+      throw new TypeError("network down");
+    }) as unknown as typeof fetch;
+    const result = await chatCompletion({
+      baseUrl: "https://example.test",
+      model: "m",
+      messages: [],
+      timeoutMs: 1000,
+      fetchImpl,
+      onFailure: (reason) => reasons.push(reason),
+    });
+    expect(result).toBeNull();
+    expect(reasons).toEqual(["TypeError"]);
+  });
+});
+
+describe("streamChat onFailure", () => {
+  test("reports the HTTP status when the response is not ok", async () => {
+    const reasons: string[] = [];
+    const fetchImpl = (async () =>
+      new Response("rate limited", { status: 429 })) as unknown as typeof fetch;
+    const result = await streamChat(
+      { baseUrl: "https://example.test", model: "m", messages: [], timeoutMs: 1000, fetchImpl, onFailure: (r) => reasons.push(r) },
+      () => {},
+    );
+    expect(result).toBeNull();
+    expect(reasons).toEqual(["http_429"]);
   });
 });
 
