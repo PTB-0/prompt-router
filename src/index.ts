@@ -15,6 +15,7 @@ import { decideRoute } from "./route.js";
 import { appendToSession, clearSession, loadSession } from "./session.js";
 import { formatStats, loadStats, recordRoute } from "./stats.js";
 import type { RouteDecision, RouteTarget } from "./types.js";
+import { toShellArgs } from "./winShell.js";
 import {
   askPlanChoice,
   askRouteChoice,
@@ -102,10 +103,11 @@ function routeDetail(target: RouteTarget, config: RouterConfig): string {
 }
 
 function runClaude(text: string, continueSession: boolean): never {
-  const claudeArgs = continueSession ? ["-c", text] : [text];
+  const useShell = process.platform === "win32";
+  const claudeArgs = toShellArgs(continueSession ? ["-c", text] : [text], useShell);
   const result = spawnSync("claude", claudeArgs, {
     stdio: "inherit",
-    shell: process.platform === "win32",
+    shell: useShell,
   });
   if (result.error) {
     showError(`failed to run claude: ${result.error.message}`);
@@ -121,7 +123,8 @@ function openInEditor(content: string): string {
   fs.writeFileSync(tmpFile, content, "utf8");
 
   const editor = process.env.EDITOR ?? (process.platform === "win32" ? "notepad" : "vi");
-  spawnSync(editor, [tmpFile], { stdio: "inherit", shell: process.platform === "win32" });
+  const useShell = process.platform === "win32";
+  spawnSync(editor, toShellArgs([tmpFile], useShell), { stdio: "inherit", shell: useShell });
 
   const edited = fs.readFileSync(tmpFile, "utf8").trim();
   fs.unlinkSync(tmpFile);
