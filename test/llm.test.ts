@@ -72,6 +72,42 @@ describe("streamChat onFailure", () => {
     expect(result).toBeNull();
     expect(reasons).toEqual(["http_429"]);
   });
+
+  test("aborts a stalled stream so the fallback chain can move on", async () => {
+    const reasons: string[] = [];
+    const encoder = new TextEncoder();
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"content":"par"}}]}\n\n'),
+          );
+          // Never close and never send again — a stalled model. The abort
+          // signal errors the stream the way a real aborted fetch body would.
+          init?.signal?.addEventListener("abort", () => {
+            controller.error(new DOMException("aborted", "AbortError"));
+          });
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const deltas: string[] = [];
+    const result = await streamChat(
+      {
+        baseUrl: "https://example.test",
+        model: "m",
+        messages: [],
+        timeoutMs: 40,
+        fetchImpl,
+        onFailure: (r) => reasons.push(r),
+      },
+      (t) => deltas.push(t),
+    );
+    expect(deltas).toEqual(["par"]);
+    expect(result).toBeNull();
+    expect(reasons).toEqual(["AbortError"]);
+  });
 });
 
 describe("extractSseDeltas", () => {

@@ -15,16 +15,27 @@ function cls(partial: Partial<Classification>): Classification {
 }
 
 describe("decideRoute", () => {
-  test("classifier outage falls back to claude and flags uncertainty", () => {
+  test("no signal at all falls back to the chat route, not Claude Code", () => {
     expect(decideRoute(null, null, opts)).toEqual({
-      target: "claude",
+      target: "openrouter",
       planFirst: false,
       uncertain: true,
     });
   });
 
-  test("heuristic code verdict goes to claude even if classifier disagrees", () => {
-    expect(decideRoute(cls({ category: "simple-qa" }), "code", opts).target).toBe("claude");
+  test("a confident non-code classification beats a heuristic code verdict", () => {
+    expect(decideRoute(cls({ category: "simple-qa", confidence: 0.9 }), "code", opts).target).toBe(
+      "local",
+    );
+    expect(decideRoute(cls({ category: "deep-qa", confidence: 0.8 }), "code", opts).target).toBe(
+      "openrouter",
+    );
+  });
+
+  test("heuristic code verdict wins when the classifier is unsure", () => {
+    const decision = decideRoute(cls({ category: "simple-qa", confidence: 0.4 }), "code", opts);
+    expect(decision.target).toBe("claude");
+    expect(decision.uncertain).toBe(true);
   });
 
   test("complex code task gets the plan-first pipeline", () => {
@@ -66,6 +77,14 @@ describe("decideRoute", () => {
   test("heuristic-only code decision is not uncertain", () => {
     expect(decideRoute(null, "code", opts)).toEqual({
       target: "claude",
+      planFirst: false,
+      uncertain: false,
+    });
+  });
+
+  test("heuristic-only simple question goes local when the classifier is down", () => {
+    expect(decideRoute(null, "simple-qa", opts)).toEqual({
+      target: "local",
       planFirst: false,
       uncertain: false,
     });

@@ -123,7 +123,7 @@ export async function streamChat(
 ): Promise<string | null> {
   const fetchImpl = req.fetchImpl ?? fetch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), req.timeoutMs);
+  let timer = setTimeout(() => controller.abort(), req.timeoutMs);
   try {
     const response = await fetchImpl(`${req.baseUrl}/chat/completions`, {
       method: "POST",
@@ -136,8 +136,6 @@ export async function streamChat(
       }),
       signal: controller.signal,
     });
-    // The timeout guards the connection; once headers arrive the stream may run long.
-    clearTimeout(timer);
     if (!response.ok || !response.body) {
       req.onFailure?.(!response.ok ? `http_${response.status}` : "no_response_body");
       return null;
@@ -148,6 +146,11 @@ export async function streamChat(
     let buffer = "";
     let full = "";
     for (;;) {
+      // A healthy stream may run for minutes, but a silent one may not: the
+      // watchdog re-arms on every chunk, so only timeoutMs of total silence
+      // aborts — and the model fallback chain can move on instead of hanging.
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(), req.timeoutMs);
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });

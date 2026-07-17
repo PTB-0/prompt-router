@@ -7,7 +7,7 @@ import * as path from "path";
 import pc from "picocolors";
 import { classify } from "./classify.js";
 import { configDir, loadConfig, type RouterConfig } from "./config.js";
-import { heuristicCategory } from "./heuristics.js";
+import { estimateComplexity, heuristicCategory } from "./heuristics.js";
 import { runInit } from "./init.js";
 import { streamChat, withModelFallback, type ChatMessage } from "./llm.js";
 import { ensureLocalServer } from "./local.js";
@@ -188,12 +188,16 @@ function logRouting(config: RouterConfig, decision: RouteDecision): void {
 function withModelTier(
   decision: RouteDecision,
   cls: Classification | null,
+  prompt: string,
   config: RouterConfig,
   args: CliArgs,
 ): RouteDecision {
   if (decision.target !== "claude") return decision;
+  // The classifier's complexity score is the best signal; when it is missing
+  // (no API key, timeout) a local estimate keeps the tier per-task instead of
+  // silently running every prompt on Claude Code's default model.
   const auto = config.modelSelection.enabled
-    ? pickModelTier(cls?.complexity ?? null, decision.uncertain, {
+    ? pickModelTier(cls?.complexity ?? estimateComplexity(prompt), decision.uncertain, {
         lowThreshold: config.thresholds.modelTierLow,
         highThreshold: config.thresholds.modelTierHigh,
       })
@@ -233,6 +237,7 @@ async function runClaudeRoute(
 async function runChatRoute(
   prompt: string,
   decision: RouteDecision,
+  cls: Classification | null,
   config: RouterConfig,
   args: CliArgs,
 ): Promise<void> {
@@ -247,9 +252,36 @@ async function runChatRoute(
     process.stdout.write(text);
   };
 
-  let answer: string | null = null;
+  // Stats and the routing log record the backend that actually served the
+  // prompt, not the one the decision hoped for.
+  const recordDispatch = (target: RouteTarget): void => {
+    recordRoute(dir, target);
+    logRouting(config, { ...decision, target });
+  };
+  const handOffToClaude = (reason: string): never => {
+    showPassThrough(reason);
+    recordDispatch("claude");
+    // uncertain:false — the uncertain bump exists to protect code tasks from
+    // weak backends, and a hand-off already lands on the strongest one.
+    const claudeDecision = withModelTier(
+      { target: "claude", planFirst: false, uncertain: false },
+      cls,
+      prompt,
+      config,
+      args,
+    );
+    return runClaude(prompt, args.continueSession, claudeDecision.model, claudeDecision.effort);
+  };
 
-  if (decision.target === "local") {
+  let answer: string | null = null;
+  let answeredBy: RouteTarget = decision.target;
+
+  // With no OpenRouter key the local server is the only chat backend left, so
+  // give it a chance even when the route said "openrouter".
+  const tryLocal =
+    decision.target === "local" || (!config.openrouter.apiKey && config.local.enabled);
+
+  if (tryLocal) {
     const stopSpinner = startSpinner("Reaching local model...");
     const up = await ensureLocalServer(config);
     stopSpinner();
@@ -258,16 +290,20 @@ async function runChatRoute(
         { baseUrl: config.local.baseUrl, model: config.local.model, messages, timeoutMs },
         writeDelta,
       );
-    }
-    if (answer === null) {
-      showPassThrough("local model unavailable — falling back to OpenRouter");
+      if (answer !== null) answeredBy = "local";
     }
   }
 
   if (answer === null) {
     if (!config.openrouter.apiKey) {
-      showPassThrough("no OPENROUTER_API_KEY — handing off to Claude Code");
-      runClaude(prompt, args.continueSession, args.forceModel ?? undefined, args.forceEffort ?? undefined);
+      handOffToClaude(
+        tryLocal
+          ? "local model unavailable and no OPENROUTER_API_KEY — handing off to Claude Code"
+          : "no OPENROUTER_API_KEY — handing off to Claude Code",
+      );
+    }
+    if (tryLocal) {
+      showPassThrough("local model unavailable — falling back to OpenRouter");
     }
     answer = await withModelFallback(config.openrouter.answerModels, async (model) => {
       let wrote = false;
@@ -289,13 +325,14 @@ async function runChatRoute(
       }
       return result;
     });
+    if (answer !== null) answeredBy = "openrouter";
   }
 
   if (answer === null) {
-    showPassThrough("all answer backends failed — handing off to Claude Code");
-    runClaude(prompt, args.continueSession, args.forceModel ?? undefined, args.forceEffort ?? undefined);
+    return handOffToClaude("all answer backends failed — handing off to Claude Code");
   }
 
+  recordDispatch(answeredBy);
   process.stdout.write("\n");
   appendToSession(
     dir,
@@ -332,62 +369,79 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
 
-  if (args.noRoute || args.prompt.length < MIN_PROMPT_LENGTH) {
-    runClaude(args.prompt, args.continueSession, args.forceModel ?? undefined, args.forceEffort ?? undefined);
+  if (args.noRoute) {
+    runClaude(
+      args.prompt,
+      args.continueSession,
+      args.forceModel ?? undefined,
+      args.forceEffort ?? undefined,
+    );
   }
 
   const heuristic = heuristicCategory(args.prompt, { inCodeProject: detectCodeProject() });
 
-  const stopSpinner = startSpinner("Optimizing & routing...");
-  const cls = await classify(args.prompt, config);
-  stopSpinner();
-
-  if (!cls) showPassThrough("optimizer unavailable — using the original prompt");
+  // Trivially short prompts skip the paid optimizer call but still get routed:
+  // "naber?" is chat and "fix bug" is code — neither belongs on Claude Code by
+  // default just for being short.
+  let cls: Classification | null = null;
+  if (args.prompt.length >= MIN_PROMPT_LENGTH) {
+    const stopSpinner = startSpinner("Optimizing & routing...");
+    cls = await classify(args.prompt, config);
+    stopSpinner();
+    if (!cls) showPassThrough("optimizer unavailable — using the original prompt");
+  }
 
   let decision: RouteDecision = args.forceTarget
-    ? { target: args.forceTarget, planFirst: false, uncertain: false }
+    ? {
+        target: args.forceTarget,
+        planFirst: false,
+        uncertain: cls !== null && cls.confidence < config.thresholds.confidence,
+      }
     : decideRoute(cls, heuristic, {
         confidenceThreshold: config.thresholds.confidence,
         planComplexityThreshold: config.thresholds.planComplexity,
         localAvailable: config.local.enabled,
       });
-  decision = withModelTier(decision, cls, config, args);
+  decision = withModelTier(decision, cls, args.prompt, config, args);
 
   let finalPrompt = cls?.optimizedPrompt ?? args.prompt;
 
-  if (!args.forceTarget) {
-    showRouting(
-      args.prompt,
-      finalPrompt,
-      decision,
-      routeDetail(decision.target, config, decision),
+  // The confirmation bar also runs for --to: forcing a backend shouldn't mean
+  // an unseen LLM rewrite goes out — the rewrite still needs a chance to be
+  // rejected or edited. Only --no-route skips it.
+  showRouting(
+    args.prompt,
+    finalPrompt,
+    decision,
+    routeDetail(decision.target, config, decision),
+    cls,
+  );
+  const choice = await askRouteChoice();
+  process.stderr.write("\n");
+  if (choice.action === "reject") finalPrompt = args.prompt;
+  else if (choice.action === "edit") finalPrompt = openInEditor(finalPrompt);
+  if (choice.overrideTarget) {
+    decision = withModelTier(
+      {
+        ...decision,
+        target: choice.overrideTarget,
+        planFirst: choice.overrideTarget === "claude" ? decision.planFirst : false,
+      },
       cls,
+      args.prompt,
+      config,
+      args,
     );
-    const choice = await askRouteChoice();
-    process.stderr.write("\n");
-    if (choice.action === "reject") finalPrompt = args.prompt;
-    else if (choice.action === "edit") finalPrompt = openInEditor(finalPrompt);
-    if (choice.overrideTarget) {
-      decision = withModelTier(
-        {
-          ...decision,
-          target: choice.overrideTarget,
-          planFirst: choice.overrideTarget === "claude" ? decision.planFirst : false,
-        },
-        cls,
-        config,
-        args,
-      );
-    }
   }
 
-  recordRoute(dir, decision.target);
-  logRouting(config, decision);
-
   if (decision.target === "claude") {
+    recordRoute(dir, "claude");
+    logRouting(config, decision);
     await runClaudeRoute(finalPrompt, decision, config, args);
   } else {
-    await runChatRoute(finalPrompt, decision, config, args);
+    // runChatRoute records the backend that actually answers, since its
+    // fallback chain can land somewhere other than the decided target.
+    await runChatRoute(finalPrompt, decision, cls, config, args);
   }
 }
 
