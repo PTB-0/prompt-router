@@ -79,7 +79,7 @@ One free LLM call on [OpenRouter](https://openrouter.ai) does two jobs at once: 
 | A quick question | **Your local model** | Instant, free, private, no rate limits |
 | A broad, open-ended question | **OpenRouter free model** | Long-form answers without burning Claude usage |
 
-**The router is deliberately paranoid.** Misrouting a code task to a small model costs you real work; over-serving a question only costs tokens. So whenever signals conflict or confidence is low, it escalates to the stronger backend — and you always get the confirmation prompt with single-key overrides.
+**The router is deliberately paranoid — about code.** Misrouting a code task to a small model costs you real work; over-serving a question only costs tokens. So when the classifier is missing or unsure, a code verdict from either signal wins and escalates to Claude Code. A *confident* classification is trusted over the regex heuristics, though — "write a poem" doesn't become a code task just because you ran it inside a repo — and you always get the confirmation prompt with single-key overrides.
 
 ## Installation
 
@@ -157,9 +157,12 @@ When a task routes to Claude Code, prompt-router also picks `--model` and
 | at or above `modelTierHigh` | `opus` | `high` |
 
 A low-confidence classification escalates one tier, on the same "misrouting
-code is costly" principle the plan-first threshold uses. With no complexity
-signal at all (`--no-route`, a very short prompt, or the classifier being
-down), no flags are passed and Claude Code's own default applies.
+code is costly" principle the plan-first threshold uses. When the classifier
+is unavailable (no API key, timeout), a conservative built-in estimate keeps
+the pick per-task: small-edit markers (typo, rename, readme, ...) drop to the
+low tier, system-wide markers (migration, "entire", production, very long
+prompts) raise it to the high tier, and everything else runs the middle tier.
+Only `--no-route` passes no flags at all, leaving Claude Code's own default.
 
 Force a one-off override for a single run with `--model`/`--effort` — either
 flag can be set independently, and the other still auto-picks. Disable
@@ -237,12 +240,14 @@ prompt-router assumes things fail and never leaves you stranded:
 
 | When… | It… |
 |---|---|
-| The classifier is down or you have no API key | Sends your original prompt straight to Claude Code |
+| The classifier is down or you have no API key | Routes by the built-in heuristics: code tasks still go to Claude Code (with an estimated model/effort tier), everything else goes to the chat backends |
 | The local server is down and can't be started | Falls back to OpenRouter |
+| There's no API key either | Tries the local server, and only then hands off to Claude Code as a last resort |
 | A free model is rate-limited mid-stream | Retries with the next model in the chain |
 | Every answer backend fails | Hands off to Claude Code |
 | Claude Code itself isn't installed | Prints your prompt so it's never lost |
-| The prompt is trivially short | Skips optimization entirely (like `--no-route`) |
+| The prompt is trivially short | Skips the optimizer call but still routes by heuristics |
+| stdin isn't a terminal (pipes, CI) | Accepts the proposed route immediately instead of eating piped data as keystrokes |
 
 ## Privacy
 
