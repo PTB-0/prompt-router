@@ -406,31 +406,32 @@ async function main(): Promise<void> {
 
   let finalPrompt = cls?.optimizedPrompt ?? args.prompt;
 
-  if (!args.forceTarget) {
-    showRouting(
-      args.prompt,
-      finalPrompt,
-      decision,
-      routeDetail(decision.target, config, decision),
+  // The confirmation bar also runs for --to: forcing a backend shouldn't mean
+  // an unseen LLM rewrite goes out — the rewrite still needs a chance to be
+  // rejected or edited. Only --no-route skips it.
+  showRouting(
+    args.prompt,
+    finalPrompt,
+    decision,
+    routeDetail(decision.target, config, decision),
+    cls,
+  );
+  const choice = await askRouteChoice();
+  process.stderr.write("\n");
+  if (choice.action === "reject") finalPrompt = args.prompt;
+  else if (choice.action === "edit") finalPrompt = openInEditor(finalPrompt);
+  if (choice.overrideTarget) {
+    decision = withModelTier(
+      {
+        ...decision,
+        target: choice.overrideTarget,
+        planFirst: choice.overrideTarget === "claude" ? decision.planFirst : false,
+      },
       cls,
+      args.prompt,
+      config,
+      args,
     );
-    const choice = await askRouteChoice();
-    process.stderr.write("\n");
-    if (choice.action === "reject") finalPrompt = args.prompt;
-    else if (choice.action === "edit") finalPrompt = openInEditor(finalPrompt);
-    if (choice.overrideTarget) {
-      decision = withModelTier(
-        {
-          ...decision,
-          target: choice.overrideTarget,
-          planFirst: choice.overrideTarget === "claude" ? decision.planFirst : false,
-        },
-        cls,
-        args.prompt,
-        config,
-        args,
-      );
-    }
   }
 
   if (decision.target === "claude") {

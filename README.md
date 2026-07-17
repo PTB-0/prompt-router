@@ -243,7 +243,7 @@ prompt-router assumes things fail and never leaves you stranded:
 | The classifier is down or you have no API key | Routes by the built-in heuristics: code tasks still go to Claude Code (with an estimated model/effort tier), everything else goes to the chat backends |
 | The local server is down and can't be started | Falls back to OpenRouter |
 | There's no API key either | Tries the local server, and only then hands off to Claude Code as a last resort |
-| A free model is rate-limited mid-stream | Retries with the next model in the chain |
+| A free model is rate-limited or stalls mid-stream | Retries with the next model in the chain (a silent stream is cut after `timeoutMs` of inactivity) |
 | Every answer backend fails | Hands off to Claude Code |
 | Claude Code itself isn't installed | Prints your prompt so it's never lost |
 | The prompt is trivially short | Skips the optimizer call but still routes by heuristics |
