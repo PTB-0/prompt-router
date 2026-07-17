@@ -60,6 +60,13 @@ export function parseClassification(raw: string): Classification | null {
   return { optimizedPrompt, category, complexity, confidence };
 }
 
+// The classification gates both the route and the model/effort tier, and the
+// response must echo a full rewritten prompt — so it gets a timeout floor like
+// the plan/answer calls, and a token budget that grows with the prompt.
+const CLASSIFY_TIMEOUT_FLOOR_MS = 15_000;
+const CLASSIFY_BASE_TOKENS = 1024;
+const CLASSIFY_MAX_TOKENS = 4096;
+
 export async function classify(
   prompt: string,
   config: RouterConfig,
@@ -75,8 +82,11 @@ export async function classify(
         { role: "system", content: CLASSIFY_SYSTEM_PROMPT },
         { role: "user", content: prompt },
       ],
-      maxTokens: 1024,
-      timeoutMs: config.timeoutMs,
+      maxTokens: Math.min(
+        CLASSIFY_MAX_TOKENS,
+        CLASSIFY_BASE_TOKENS + Math.ceil(prompt.length / 3),
+      ),
+      timeoutMs: Math.max(config.timeoutMs, CLASSIFY_TIMEOUT_FLOOR_MS),
       onFailure: (reason) => failures.push({ model, reason }),
     });
     if (!raw) return null;

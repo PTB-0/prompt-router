@@ -53,6 +53,12 @@ export function showRouting(
 }
 
 export function askRouteChoice(): Promise<RouteChoice> {
+  // Piped/CI stdin can't answer (and its data must not be eaten as menu
+  // keystrokes) — take the default immediately instead of pretending to wait.
+  if (!process.stdin.isTTY) {
+    process.stderr.write(pc.dim("  non-interactive session — accepting the route\n"));
+    return Promise.resolve({ action: "accept" });
+  }
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
 
@@ -111,6 +117,10 @@ export function showPlan(plan: string): void {
 }
 
 export function askPlanChoice(): Promise<PlanChoice> {
+  if (!process.stdin.isTTY) {
+    process.stderr.write(pc.dim("  non-interactive session — attaching the plan\n"));
+    return Promise.resolve("accept");
+  }
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
 

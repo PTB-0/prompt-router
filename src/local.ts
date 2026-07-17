@@ -32,17 +32,23 @@ export async function ensureLocalServer(config: RouterConfig): Promise<boolean> 
   if (!config.local.autoStart) return false;
 
   // LM Studio ships the `lms` CLI; `server start` is a no-op when already running.
-  try {
-    const child = spawn("lms", ["server", "start"], {
-      shell: process.platform === "win32",
-      stdio: "ignore",
-      detached: true,
-    });
-    child.on("error", () => undefined);
-    child.unref();
-  } catch {
-    return false;
-  }
+  // A missing binary surfaces as an async "error" event (ENOENT), not a throw —
+  // bail out immediately instead of polling for a server that can never start.
+  const started = await new Promise<boolean>((resolve) => {
+    try {
+      const child = spawn("lms", ["server", "start"], {
+        shell: process.platform === "win32",
+        stdio: "ignore",
+        detached: true,
+      });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => resolve(true));
+      child.unref();
+    } catch {
+      resolve(false);
+    }
+  });
+  if (!started) return false;
 
   for (let attempt = 0; attempt < START_POLL_ATTEMPTS; attempt++) {
     await delay(START_POLL_INTERVAL_MS);
