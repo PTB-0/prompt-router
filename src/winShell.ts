@@ -9,20 +9,78 @@
  * would execute the `del`. The fix (same algorithm as cross-spawn):
  * 1. escape for the target program's argv parser: double backslash runs
  *    before quotes and at the end, escape quotes as `\"`, wrap in quotes;
- * 2. caret-escape every cmd metacharacter so cmd never interprets any of it —
- *    twice, because the .cmd shim's `%*` re-expansion runs the line through
- *    cmd's parser a second time.
+ * 2. caret-escape every cmd metacharacter so cmd never interprets any of it.
+ *
+ * The caret layer is consumed by cmd's parse pass. A `.cmd`/`.bat` shim adds a
+ * SECOND pass — its `%*` re-expansion runs the line through cmd again — so a
+ * shim target needs the carets doubled. A native `.exe` is reached through a
+ * single pass, so it must get exactly one caret layer; a second layer survives
+ * into the program's argv as literal carets (turning `--model` into
+ * `^--model^`). `isBatchShim` picks the right depth per resolved target.
  */
+import * as fs from "fs";
+import * as path from "path";
+
 const CMD_META = /([()\][%!^"`<>&|;, *?])/g;
 
-export function quoteForWindowsShell(arg: string): string {
+export function quoteForWindowsShell(arg: string, doubleEscape: boolean): string {
   let escaped = arg.replace(/(\\*)"/g, '$1$1\\"');
   escaped = escaped.replace(/(\\*)$/, "$1$1");
   escaped = `"${escaped}"`;
   escaped = escaped.replace(CMD_META, "^$1");
-  return escaped.replace(CMD_META, "^$1");
+  if (doubleEscape) escaped = escaped.replace(CMD_META, "^$1");
+  return escaped;
 }
 
-export function toShellArgs(args: string[], useShell: boolean): string[] {
-  return useShell ? args.map(quoteForWindowsShell) : args;
+export function toShellArgs(
+  args: string[],
+  useShell: boolean,
+  doubleEscape: boolean,
+): string[] {
+  return useShell ? args.map((a) => quoteForWindowsShell(a, doubleEscape)) : args;
+}
+
+export function isBatchExt(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return ext === ".cmd" || ext === ".bat";
+}
+
+/**
+ * Resolve a bare command name to the file cmd.exe would actually run, following
+ * PATH + PATHEXT the way cmd does (first matching directory × extension wins).
+ * Returns null if nothing matches. An explicit path or extension is used as-is.
+ */
+export function resolveWindowsCommand(command: string): string | null {
+  const hasDir = command.includes("/") || command.includes("\\");
+  const hasExt = path.extname(command) !== "";
+  const base = hasDir ? path.basename(command) : command;
+  const dirs = hasDir
+    ? [path.dirname(command)]
+    : (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const pathext = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .filter(Boolean);
+  const exts = hasExt ? [""] : pathext;
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, base + ext);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        // not in this directory — keep looking
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * True when `command` resolves to a `.cmd`/`.bat` shim on Windows — the only
+ * case that needs the caret layer doubled. A native `.exe` (or anything not
+ * found) gets single-escaped. No-op off Windows, where we never use a shell.
+ */
+export function isBatchShim(command: string): boolean {
+  if (process.platform !== "win32") return false;
+  const resolved = resolveWindowsCommand(command);
+  return resolved !== null && isBatchExt(resolved);
 }

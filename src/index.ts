@@ -19,7 +19,7 @@ import { buildClaudeArgs } from "./claudeArgs.js";
 import { appendToSession, clearSession, loadSession } from "./session.js";
 import { formatStats, loadStats, recordRoute } from "./stats.js";
 import type { Classification, EffortLevel, RouteDecision, RouteTarget } from "./types.js";
-import { toShellArgs } from "./winShell.js";
+import { isBatchShim, toShellArgs } from "./winShell.js";
 import {
   askPlanChoice,
   askRouteChoice,
@@ -148,7 +148,11 @@ function runClaude(
   effort?: EffortLevel,
 ): never {
   const useShell = process.platform === "win32";
-  const claudeArgs = toShellArgs(buildClaudeArgs(text, continueSession, model, effort), useShell);
+  const claudeArgs = toShellArgs(
+    buildClaudeArgs(text, continueSession, model, effort),
+    useShell,
+    useShell && isBatchShim("claude"),
+  );
   const result = spawnSync("claude", claudeArgs, {
     stdio: "inherit",
     shell: useShell,
@@ -168,7 +172,10 @@ function openInEditor(content: string): string {
 
   const editor = process.env.EDITOR ?? (process.platform === "win32" ? "notepad" : "vi");
   const useShell = process.platform === "win32";
-  spawnSync(editor, toShellArgs([tmpFile], useShell), { stdio: "inherit", shell: useShell });
+  spawnSync(editor, toShellArgs([tmpFile], useShell, useShell && isBatchShim(editor)), {
+    stdio: "inherit",
+    shell: useShell,
+  });
 
   const edited = fs.readFileSync(tmpFile, "utf8").trim();
   fs.unlinkSync(tmpFile);
