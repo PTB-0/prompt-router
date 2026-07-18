@@ -109,30 +109,30 @@ describe("resolveWindowsCommand", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  // The candidate path is built from PATHEXT, so keep the test's PATHEXT case
+  // matching the on-disk files. That makes the resolver deterministic on both a
+  // case-sensitive FS (Linux CI) and a case-insensitive one (Windows). The
+  // real code only ever runs on Windows, where case never matters.
+  const PATHEXT = ".com;.exe;.bat;.cmd";
+
   it("prefers a native .exe over a sibling .cmd, matching PATHEXT order", () => {
     fs.writeFileSync(path.join(dir, "claude.exe"), "");
     fs.writeFileSync(path.join(dir, "claude.cmd"), "");
     process.env.PATH = dir;
-    process.env.PATHEXT = ".COM;.EXE;.BAT;.CMD";
-    // Extension case comes from PATHEXT, not the on-disk file (Windows FS is
-    // case-insensitive), so compare case-insensitively — isBatchExt does too.
-    expect(resolveWindowsCommand("claude")?.toLowerCase()).toBe(
-      path.join(dir, "claude.exe").toLowerCase(),
-    );
+    process.env.PATHEXT = PATHEXT;
+    expect(resolveWindowsCommand("claude")).toBe(path.join(dir, "claude.exe"));
   });
 
   it("finds a .cmd shim when that is the only match", () => {
     fs.writeFileSync(path.join(dir, "claude.cmd"), "");
     process.env.PATH = dir;
-    process.env.PATHEXT = ".COM;.EXE;.BAT;.CMD";
-    expect(resolveWindowsCommand("claude")?.toLowerCase()).toBe(
-      path.join(dir, "claude.cmd").toLowerCase(),
-    );
+    process.env.PATHEXT = PATHEXT;
+    expect(resolveWindowsCommand("claude")).toBe(path.join(dir, "claude.cmd"));
   });
 
   it("returns null when nothing on PATH matches", () => {
     process.env.PATH = dir;
-    process.env.PATHEXT = ".COM;.EXE;.BAT;.CMD";
+    process.env.PATHEXT = PATHEXT;
     expect(resolveWindowsCommand("claude")).toBeNull();
   });
 });
