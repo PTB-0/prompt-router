@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .env
+
+# graphify bilgi grafiği çıktısı (post-commit hook lokal olarak tazeler; vault'ta saklanıyor)
+graphify-out/
