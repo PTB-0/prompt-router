@@ -31,7 +31,7 @@ import type {
   ExecBackend,
   ModelTier,
 } from "./types.js";
-import { isBatchShim, toShellArgs } from "./winShell.js";
+import { isBatchShim, resolveWindowsCommand, toShellArgs } from "./winShell.js";
 import {
   askPlanChoice,
   askRouteChoice,
@@ -146,6 +146,20 @@ function routeDetail(backend: Backend, dispatch: Dispatch): string {
   return parts.length > 0 ? `${backend.label} (${parts.join(", ")})` : backend.label;
 }
 
+/**
+ * True when the command cannot possibly be spawned. Only meaningful on
+ * win32: execSpawnPlan always shells through cmd.exe there (see
+ * src/winShell.ts), so cmd.exe itself launches fine and merely exits
+ * non-zero with its own "not recognized" message on a missing command —
+ * spawnSync's `result.error` never gets set, so that check alone misses it.
+ * Off win32, no shell is used and a genuinely missing command already
+ * surfaces as a real ENOENT on `result.error`, so this pre-check is a no-op
+ * there and behaviour is unchanged.
+ */
+function commandUnresolvable(command: string): boolean {
+  return process.platform === "win32" && resolveWindowsCommand(command) === null;
+}
+
 function runExec(
   backend: ExecBackend,
   text: string,
@@ -153,17 +167,21 @@ function runExec(
   model?: string,
   effort?: EffortLevel,
 ): never {
+  const fail = (reason: string): never => {
+    showError(`failed to run ${backend.command}: ${reason}`);
+    process.stderr.write("Your prompt, so it is not lost:\n\n");
+    process.stdout.write(text + "\n");
+    process.exit(1);
+  };
+
+  if (commandUnresolvable(backend.command)) fail("command not found");
+
   const plan = execSpawnPlan(backend, { prompt: text, continueSession, model, effort });
   const result = spawnSync(plan.command, plan.args, {
     stdio: "inherit",
     shell: plan.useShell,
   });
-  if (result.error) {
-    showError(`failed to run ${backend.command}: ${result.error.message}`);
-    process.stderr.write("Your prompt, so it is not lost:\n\n");
-    process.stdout.write(text + "\n");
-    process.exit(1);
-  }
+  if (result.error) fail(result.error.message);
   process.exit(result.status ?? 1);
 }
 

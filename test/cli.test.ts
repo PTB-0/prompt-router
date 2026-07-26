@@ -211,27 +211,20 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
     CLI_TIMEOUT_MS,
   );
 
-  // See the comment inside: this specific guarantee does not hold on win32
-  // as currently coded, for reasons unrelated to hermeticity. Verified
-  // empirically rather than assumed — see the fix report appended to
-  // task-11-report.md for the raw repro.
-  test.skipIf(process.platform === "win32")(
+  test(
     "a missing exec command prints the prompt so it is not lost",
     async () => {
       // On win32, src/dispatch.ts's execSpawnPlan always shells through
-      // cmd.exe (src/winShell.ts's doc comment explains why: it's needed to
-      // invoke .cmd shims correctly). cmd.exe itself spawns successfully and
-      // merely exits non-zero with its own "not recognized" message, so
-      // Node's spawnSync never populates `result.error` — the `if
-      // (result.error)` branch in runExec (src/index.ts) that prints "Your
-      // prompt, so it is not lost" is unreachable via a plain missing
-      // command name on this platform. test/local.test.ts's analogous
-      // ENOENT-fast-fail test skips win32 for the same underlying reason.
-      // This is a pre-existing gap (the old runClaude had the identical
-      // shape), not something introduced by Task 11, and changing runExec's
-      // failure detection is outside this fix round's authorized scope
-      // (cost/tier extraction + this test file) — flagged for the human
-      // partner to triage rather than silently patched or silently ignored.
+      // cmd.exe (see src/winShell.ts — needed to invoke .cmd shims
+      // correctly). cmd.exe itself spawns successfully for a missing
+      // command and merely exits non-zero with its own "not recognized"
+      // message, so Node's spawnSync never populates `result.error`. Rather
+      // than rely on that, runExec (src/index.ts) now checks
+      // resolveWindowsCommand (src/winShell.ts) *before* spawning, so a
+      // command that cannot resolve on win32 is caught the same way ENOENT
+      // is caught on POSIX. This is what makes this test pass on every
+      // platform now — see the fix report's RED/GREEN evidence for the
+      // pre-fix failure this test used to expose.
       const dir = makeTmpDir();
       writeConfig(dir, { backends: [execBackendConfig()] });
       const prompt = "please refactor the auth module for clarity";
