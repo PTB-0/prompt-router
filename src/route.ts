@@ -1,9 +1,8 @@
-import type { Category, Classification, RouteDecision } from "./types.js";
+import type { Category, CategoryDecision, Classification } from "./types.js";
 
 export interface RouteOptions {
   confidenceThreshold: number;
   planComplexityThreshold: number;
-  localAvailable: boolean;
 }
 
 function resolveCategory(
@@ -27,26 +26,21 @@ export function decideRoute(
   cls: Classification | null,
   heuristic: Category | null,
   opts: RouteOptions,
-): RouteDecision {
+): CategoryDecision {
   if (!cls && !heuristic) {
-    // No signal at all: treat it as a question. Claude Code is reserved for
-    // code tasks; the chat route's own fallback chain still ends at Claude
-    // Code if every answer backend is unreachable, so nothing is lost.
-    return { target: "openrouter", planFirst: false, uncertain: true };
+    // No signal at all: treat it as a question. Agentic backends are reserved
+    // for code; the chat fallback chain still ends at one if every answer
+    // backend is unreachable, so nothing is lost.
+    return { category: "deep-qa", planFirst: false, uncertain: true };
   }
 
   const uncertain = cls !== null && cls.confidence < opts.confidenceThreshold;
   const category = resolveCategory(cls, heuristic, uncertain);
 
-  if (category === "code") {
-    return {
-      target: "claude",
-      planFirst: cls !== null && cls.complexity >= opts.planComplexityThreshold,
-      uncertain,
-    };
-  }
-  if (category === "simple-qa" && opts.localAvailable) {
-    return { target: "local", planFirst: false, uncertain };
-  }
-  return { target: "openrouter", planFirst: false, uncertain };
+  return {
+    category,
+    planFirst:
+      category === "code" && cls !== null && cls.complexity >= opts.planComplexityThreshold,
+    uncertain,
+  };
 }

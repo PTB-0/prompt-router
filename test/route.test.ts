@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { decideRoute } from "../src/route.js";
 import type { Classification } from "../src/types.js";
 
-const opts = { confidenceThreshold: 0.6, planComplexityThreshold: 0.7, localAvailable: true };
+const opts = { confidenceThreshold: 0.6, planComplexityThreshold: 0.7 };
 
 function cls(partial: Partial<Classification>): Classification {
   return {
@@ -15,59 +15,53 @@ function cls(partial: Partial<Classification>): Classification {
 }
 
 describe("decideRoute", () => {
-  test("no signal at all falls back to the chat route, not Claude Code", () => {
+  test("no signal at all falls back to a question, not a code task", () => {
     expect(decideRoute(null, null, opts)).toEqual({
-      target: "openrouter",
+      category: "deep-qa",
       planFirst: false,
       uncertain: true,
     });
   });
 
   test("a confident non-code classification beats a heuristic code verdict", () => {
-    expect(decideRoute(cls({ category: "simple-qa", confidence: 0.9 }), "code", opts).target).toBe(
-      "local",
+    expect(decideRoute(cls({ category: "simple-qa", confidence: 0.9 }), "code", opts).category).toBe(
+      "simple-qa",
     );
-    expect(decideRoute(cls({ category: "deep-qa", confidence: 0.8 }), "code", opts).target).toBe(
-      "openrouter",
+    expect(decideRoute(cls({ category: "deep-qa", confidence: 0.8 }), "code", opts).category).toBe(
+      "deep-qa",
     );
   });
 
   test("heuristic code verdict wins when the classifier is unsure", () => {
     const decision = decideRoute(cls({ category: "simple-qa", confidence: 0.4 }), "code", opts);
-    expect(decision.target).toBe("claude");
+    expect(decision.category).toBe("code");
     expect(decision.uncertain).toBe(true);
   });
 
-  test("complex code task gets the plan-first pipeline", () => {
+  test("complex code task is eligible for the plan-first pipeline", () => {
     expect(decideRoute(cls({ category: "code", complexity: 0.9 }), null, opts)).toEqual({
-      target: "claude",
+      category: "code",
       planFirst: true,
       uncertain: false,
     });
   });
 
-  test("trivial code task goes straight to claude", () => {
+  test("trivial code task skips the plan", () => {
     expect(decideRoute(cls({ category: "code", complexity: 0.3 }), "code", opts)).toEqual({
-      target: "claude",
+      category: "code",
       planFirst: false,
       uncertain: false,
     });
   });
 
-  test("confident simple question goes local", () => {
-    expect(decideRoute(cls({}), "simple-qa", opts).target).toBe("local");
-  });
-
-  test("simple question without a local backend goes to openrouter", () => {
-    expect(decideRoute(cls({}), null, { ...opts, localAvailable: false }).target).toBe(
-      "openrouter",
+  test("a complex question is never plan-first", () => {
+    expect(decideRoute(cls({ category: "deep-qa", complexity: 0.9 }), null, opts).planFirst).toBe(
+      false,
     );
   });
 
-  test("deep question goes to openrouter", () => {
-    expect(decideRoute(cls({ category: "deep-qa", complexity: 0.8 }), null, opts).target).toBe(
-      "openrouter",
-    );
+  test("confident simple question stays simple-qa", () => {
+    expect(decideRoute(cls({}), "simple-qa", opts).category).toBe("simple-qa");
   });
 
   test("low classifier confidence is flagged uncertain", () => {
@@ -76,15 +70,15 @@ describe("decideRoute", () => {
 
   test("heuristic-only code decision is not uncertain", () => {
     expect(decideRoute(null, "code", opts)).toEqual({
-      target: "claude",
+      category: "code",
       planFirst: false,
       uncertain: false,
     });
   });
 
-  test("heuristic-only simple question goes local when the classifier is down", () => {
+  test("heuristic-only simple question when the classifier is down", () => {
     expect(decideRoute(null, "simple-qa", opts)).toEqual({
-      target: "local",
+      category: "simple-qa",
       planFirst: false,
       uncertain: false,
     });
