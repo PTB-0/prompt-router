@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { costOf, estimateTokens, estimateUsage, referencePricing } from "../src/cost.js";
+import { costOf, estimateTokens, estimateUsage, referencePricing, savingsFor } from "../src/cost.js";
 import type { ExecBackend } from "../src/types.js";
 
 const claude: ExecBackend = {
@@ -78,5 +78,45 @@ describe("referencePricing", () => {
     const bare: ExecBackend = { ...claude, modelPricing: {} };
     expect(referencePricing(bare, { model: "opus", effort: "high" })).toBeNull();
     expect(referencePricing(null, { model: "opus", effort: "high" })).toBeNull();
+  });
+});
+
+describe("savingsFor", () => {
+  const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000, estimated: false };
+
+  test("prices the same usage lower at the haiku tier than at the opus tier", () => {
+    // This is the counterfactual-tier rule itself: a trivial prompt must not
+    // be valued as if it would have run on the top-tier model.
+    const haiku = savingsFor(usage, claude, { model: "haiku", effort: "low" });
+    const opus = savingsFor(usage, claude, { model: "opus", effort: "high" });
+    expect(haiku.savedUsd).toBeLessThan(opus.savedUsd);
+    expect(haiku.savedUsd).toBeCloseTo(6, 10); // 1*1 + 5*1
+    expect(opus.savedUsd).toBeCloseTo(30, 10); // 5*1 + 25*1
+  });
+
+  test("savedTokens is the full input+output count regardless of tier", () => {
+    const haiku = savingsFor(usage, claude, { model: "haiku", effort: "low" });
+    const opus = savingsFor(usage, claude, { model: "opus", effort: "high" });
+    expect(haiku.savedTokens).toBe(2_000_000);
+    expect(opus.savedTokens).toBe(2_000_000);
+  });
+
+  test("no handoff backend means nothing was diverted, so nothing was saved", () => {
+    expect(savingsFor(usage, null, { model: "opus", effort: "high" })).toEqual({
+      savedTokens: 0,
+      savedUsd: 0,
+    });
+  });
+
+  test("a handoff backend with no pricing for the tier also saves nothing", () => {
+    const bare: ExecBackend = { ...claude, modelPricing: {} };
+    expect(savingsFor(usage, bare, { model: "opus", effort: "high" })).toEqual({
+      savedTokens: 0,
+      savedUsd: 0,
+    });
+  });
+
+  test("with no tier selected, falls back to the sonnet reference price", () => {
+    expect(savingsFor(usage, claude, null).savedUsd).toBeCloseTo(18, 10); // 3*1 + 15*1
   });
 });

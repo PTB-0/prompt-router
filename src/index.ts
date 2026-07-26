@@ -8,7 +8,7 @@ import pc from "picocolors";
 import { findHandoffBackend, selectCandidates } from "./backends.js";
 import { classify } from "./classify.js";
 import { configDir, loadConfig, type RouterConfig } from "./config.js";
-import { costOf, estimateUsage, referencePricing } from "./cost.js";
+import { estimateUsage, savingsFor } from "./cost.js";
 import { dispatchChat, execSpawnPlan } from "./dispatch.js";
 import { estimateComplexity, heuristicCategory } from "./heuristics.js";
 import { runInit } from "./init.js";
@@ -19,7 +19,7 @@ import { attachPlan, generatePlan } from "./plan.js";
 import { decideRoute } from "./route.js";
 import { appendToSession, clearSession, loadSession } from "./session.js";
 import { formatStats, loadStats, recordDispatch } from "./stats.js";
-import { pickModelTier } from "./tier.js";
+import { tierForBackend } from "./tier.js";
 import type {
   Backend,
   Category,
@@ -30,7 +30,6 @@ import type {
   EffortLevel,
   ExecBackend,
   ModelTier,
-  TokenUsage,
 } from "./types.js";
 import { isBatchShim, toShellArgs } from "./winShell.js";
 import {
@@ -201,12 +200,13 @@ function tierFor(
   config: RouterConfig,
   uncertain: boolean,
 ): ModelTier | null {
-  if (backend.kind !== "exec" || !backend.supportsModelTier) return null;
-  if (!config.modelSelection.enabled) return null;
   // The classifier's complexity score is the best signal; when it is missing
   // (no API key, timeout) a local estimate keeps the tier per-task instead of
-  // silently running every prompt on the backend's default model.
-  return pickModelTier(cls?.complexity ?? estimateComplexity(prompt), uncertain, {
+  // silently running every prompt on the backend's default model. The
+  // capability gate itself (which backends are even eligible) lives in
+  // tier.ts, where it can be unit-tested without the CLI.
+  return tierForBackend(backend, cls?.complexity ?? estimateComplexity(prompt), uncertain, {
+    enabled: config.modelSelection.enabled,
     lowThreshold: config.thresholds.modelTierLow,
     highThreshold: config.thresholds.modelTierHigh,
   });
@@ -271,19 +271,6 @@ async function runExecRoute(
   });
   logRouting(config, backend.id, dispatch);
   runExec(backend, finalPrompt, args.continueSession, dispatch.model, dispatch.effort);
-}
-
-function savingsFor(
-  usage: TokenUsage,
-  handoff: ExecBackend | null,
-  tier: ModelTier | null,
-): { savedTokens: number; savedUsd: number } {
-  const pricing = referencePricing(handoff, tier);
-  if (!pricing) return { savedTokens: 0, savedUsd: 0 };
-  return {
-    savedTokens: usage.inputTokens + usage.outputTokens,
-    savedUsd: costOf(usage, pricing),
-  };
 }
 
 async function runChatRoute(

@@ -37,3 +37,29 @@ export function referencePricing(
   const model = tier?.model ?? DEFAULT_REFERENCE_MODEL;
   return backend.modelPricing[model] ?? null;
 }
+
+export interface Savings {
+  /** Tokens that did not go to the agentic backend. */
+  savedTokens: number;
+  /** Counterfactual USD those tokens would have cost there. */
+  savedUsd: number;
+}
+
+/**
+ * What a dispatch saved relative to the counterfactual of running on the
+ * handoff backend at the given tier. Zero when there is no handoff backend to
+ * compare against, or it has no pricing for that tier — nothing was actually
+ * diverted from, so nothing was saved.
+ */
+export function savingsFor(
+  usage: TokenUsage,
+  handoff: ExecBackend | null,
+  tier: ModelTier | null,
+): Savings {
+  const pricing = referencePricing(handoff, tier);
+  if (!pricing) return { savedTokens: 0, savedUsd: 0 };
+  return {
+    savedTokens: usage.inputTokens + usage.outputTokens,
+    savedUsd: costOf(usage, pricing),
+  };
+}
