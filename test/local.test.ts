@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { isServerUp, ensureChatBackend } from "../src/local.js";
 import type { ChatBackend } from "../src/types.js";
 
@@ -45,7 +45,13 @@ describe("ensureChatBackend", () => {
   });
 
   test("a backend that does not probe is assumed reachable", async () => {
-    await expect(ensureChatBackend(backend({ probe: false }))).resolves.toBe(true);
+    const fetchSpy = vi.spyOn(global, "fetch");
+    try {
+      await expect(ensureChatBackend(backend({ probe: false }))).resolves.toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   test("a probing backend with no server and no autostart is unreachable", async () => {
@@ -59,4 +65,15 @@ describe("ensureChatBackend", () => {
       ensureChatBackend(backend({ probe: true, autoStart: true, autoStartCommand: [] })),
     ).resolves.toBe(false);
   });
+
+  test.skipIf(process.platform === "win32")(
+    "fails fast when a nonexistent CLI is missing instead of polling for the server",
+    async () => {
+      const startedAt = Date.now();
+      expect(await ensureChatBackend(backend({ probe: true, autoStart: true, autoStartCommand: ["nonexistent-binary-xyz"] }))).toBe(false);
+      // Without the fast-fail on ENOENT, this path polls for ~6s waiting on a server
+      // that can never start. The error event from spawn should bail out immediately.
+      expect(Date.now() - startedAt).toBeLessThan(3000);
+    },
+  );
 });
