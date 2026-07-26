@@ -38,6 +38,12 @@ describe("decideRoute", () => {
     expect(decision.uncertain).toBe(true);
   });
 
+  test("an unsure code classification still wins over a non-code heuristic", () => {
+    expect(
+      decideRoute(cls({ category: "code", confidence: 0.3 }), "simple-qa", opts).category,
+    ).toBe("code");
+  });
+
   test("complex code task is eligible for the plan-first pipeline", () => {
     expect(decideRoute(cls({ category: "code", complexity: 0.9 }), null, opts)).toEqual({
       category: "code",
