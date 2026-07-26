@@ -106,4 +106,45 @@ describe("stats v2", () => {
     expect(output).toContain("saved");
     expect(output).not.toContain("undefined");
   });
+
+  test("formatStats renders an exec backend's tokens as input-only, never a combined total", () => {
+    // outputTokens is nonzero on purpose: if the renderer ever merged
+    // inTok + outTok for an exec backend, this would render "140" instead of
+    // "40(in)", and the money cell would show a dollar figure instead of "—".
+    recordDispatch(dir, {
+      backendId: "claude",
+      category: "code",
+      usage: { inputTokens: 40, outputTokens: 100, estimated: false },
+      spend: 0,
+      savedTokens: 0,
+      savedUsd: 0,
+    });
+    const output = formatStats(loadStats(dir), backends);
+    expect(output).toContain("40(in)");
+    expect(output).toContain("—");
+    expect(output).not.toContain("140");
+  });
+
+  test("formatStats renders cleanly on entirely empty stats", () => {
+    const output = formatStats(loadStats(dir), backends);
+    expect(output).not.toContain("undefined");
+    expect(output).not.toContain("NaN");
+  });
+
+  test("formatStats renders cleanly for a backend id absent from the passed backends list", () => {
+    // Simulates a user removing a backend from config after prior dispatches
+    // were recorded against it — the stats file still has the id, but the
+    // `backends` argument no longer does.
+    recordDispatch(dir, {
+      backendId: "retired-backend",
+      category: "deep-qa",
+      usage: { inputTokens: 5, outputTokens: 5, estimated: false },
+      spend: 0.01,
+      savedTokens: 0,
+      savedUsd: 0,
+    });
+    const output = formatStats(loadStats(dir), backends);
+    expect(output).not.toContain("undefined");
+    expect(output).not.toContain("NaN");
+  });
 });
