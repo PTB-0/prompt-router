@@ -1,7 +1,5 @@
 export type Category = "code" | "simple-qa" | "deep-qa";
 
-export type RouteTarget = "claude" | "local" | "openrouter";
-
 export type ClaudeModel = "haiku" | "sonnet" | "opus";
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
@@ -16,14 +14,6 @@ export interface Classification {
   category: Category;
   complexity: number;
   confidence: number;
-}
-
-export interface RouteDecision {
-  target: RouteTarget;
-  planFirst: boolean;
-  uncertain: boolean;
-  model?: string;
-  effort?: EffortLevel;
 }
 
 export interface SessionMessage {
