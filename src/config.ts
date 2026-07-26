@@ -2,6 +2,7 @@ import { config as loadDotenv } from "dotenv";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import type { Backend, Category, ChatBackend, ExecBackend, Pricing } from "./types.js";
 
 export interface RouterConfig {
   openrouter: {
@@ -33,6 +34,7 @@ export interface RouterConfig {
     routingLog: boolean;
   };
   timeoutMs: number;
+  backends: Backend[];
 }
 
 const DEFAULTS: RouterConfig = {
@@ -77,7 +79,193 @@ const DEFAULTS: RouterConfig = {
     routingLog: false,
   },
   timeoutMs: 8000,
+  // Overwritten by resolveBackends() at the end of resolveConfig; empty here
+  // only to satisfy RouterConfig before that runs.
+  backends: [],
 };
+
+const CLAUDE_MODEL_PRICING: Record<string, Pricing> = {
+  haiku: { inputPer1M: 1, outputPer1M: 5 },
+  sonnet: { inputPer1M: 3, outputPer1M: 15 },
+  opus: { inputPer1M: 5, outputPer1M: 25 },
+};
+
+const FREE: Pricing = { inputPer1M: 0, outputPer1M: 0 };
+
+/** Exported because the init wizard writes these same shapes (Task 12). */
+export function defaultBackends(): Backend[] {
+  return [
+    {
+      id: "claude",
+      label: "Claude Code",
+      kind: "exec",
+      categories: ["code"],
+      priority: 10,
+      enabled: true,
+      command: "claude",
+      args: ["{model}", "{effort}", "{continue}", "{prompt}"],
+      modelFlag: "--model",
+      effortFlag: "--effort",
+      continueFlag: "-c",
+      supportsModelTier: true,
+      supportsPlan: true,
+      supportsContinue: true,
+      modelPricing: { ...CLAUDE_MODEL_PRICING },
+    },
+    {
+      id: "local",
+      label: "local model",
+      kind: "chat",
+      categories: ["simple-qa"],
+      priority: 10,
+      enabled: true,
+      baseUrl: DEFAULTS.local.baseUrl,
+      models: [DEFAULTS.local.model],
+      probe: true,
+      autoStart: true,
+      autoStartCommand: ["lms", "server", "start"],
+      pricing: { ...FREE },
+    },
+    {
+      id: "openrouter",
+      label: "OpenRouter",
+      kind: "chat",
+      categories: ["simple-qa", "deep-qa"],
+      priority: 5,
+      enabled: true,
+      baseUrl: DEFAULTS.openrouter.baseUrl,
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      models: [...DEFAULTS.openrouter.answerModels],
+      probe: false,
+      autoStart: false,
+      autoStartCommand: [],
+      pricing: { ...FREE },
+    },
+  ];
+}
+
+const CATEGORIES: Category[] = ["code", "simple-qa", "deep-qa"];
+
+function pickCategories(value: unknown, fallback: Category[]): Category[] {
+  if (!Array.isArray(value)) return fallback;
+  const picked = value.filter((v): v is Category =>
+    typeof v === "string" && (CATEGORIES as string[]).includes(v),
+  );
+  return picked.length > 0 ? picked : fallback;
+}
+
+function pickPricing(value: unknown, fallback: Pricing): Pricing {
+  if (!isRecord(value)) return fallback;
+  const input = value["inputPer1M"];
+  const output = value["outputPer1M"];
+  return {
+    inputPer1M: typeof input === "number" && input >= 0 ? input : fallback.inputPer1M,
+    outputPer1M: typeof output === "number" && output >= 0 ? output : fallback.outputPer1M,
+  };
+}
+
+function pickNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function parseBackend(raw: unknown): Backend | null {
+  if (!isRecord(raw)) return null;
+  const id = typeof raw["id"] === "string" ? raw["id"] : "";
+  if (!id) return null;
+  const kind = raw["kind"];
+  const label = pickString(raw["label"], id);
+  const priority = pickNumber(raw["priority"], 0);
+  const enabled = pickBoolean(raw["enabled"], true);
+
+  if (kind === "exec") {
+    const command = pickString(raw["command"], "");
+    if (!command) return null;
+    const args = pickStringArray(raw["args"], ["{prompt}"]);
+    const modelPricing: Record<string, Pricing> = {};
+    const rawPricing = raw["modelPricing"];
+    if (isRecord(rawPricing)) {
+      for (const [model, value] of Object.entries(rawPricing)) {
+        modelPricing[model] = pickPricing(value, FREE);
+      }
+    }
+    return {
+      id,
+      label,
+      kind: "exec",
+      categories: pickCategories(raw["categories"], ["code"]),
+      priority,
+      enabled,
+      command,
+      args,
+      modelFlag: pickString(raw["modelFlag"], "--model"),
+      effortFlag: pickString(raw["effortFlag"], "--effort"),
+      continueFlag: pickString(raw["continueFlag"], "-c"),
+      supportsModelTier: pickBoolean(raw["supportsModelTier"], false),
+      supportsPlan: pickBoolean(raw["supportsPlan"], false),
+      supportsContinue: pickBoolean(raw["supportsContinue"], false),
+      modelPricing,
+    };
+  }
+
+  if (kind === "chat") {
+    const baseUrl = pickString(raw["baseUrl"], "");
+    if (!baseUrl) return null;
+    const models = pickStringArray(raw["models"], []);
+    if (models.length === 0) return null;
+    const apiKeyEnv = typeof raw["apiKeyEnv"] === "string" ? raw["apiKeyEnv"] : undefined;
+    return {
+      id,
+      label,
+      kind: "chat",
+      categories: pickCategories(raw["categories"], ["simple-qa", "deep-qa"]),
+      priority,
+      enabled,
+      baseUrl,
+      apiKeyEnv,
+      models,
+      probe: pickBoolean(raw["probe"], false),
+      autoStart: pickBoolean(raw["autoStart"], false),
+      autoStartCommand: pickStringArray(raw["autoStartCommand"], []),
+      pricing: pickPricing(raw["pricing"], FREE),
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Backends come from `backends` when present, otherwise they are derived from
+ * the legacy `local` / `openrouter` blocks so an existing config keeps working
+ * without an edit.
+ */
+function resolveBackends(file: Record<string, unknown>, cfg: RouterConfig): Backend[] {
+  const declared = file["backends"];
+  if (Array.isArray(declared)) {
+    const parsed: Backend[] = [];
+    for (const entry of declared) {
+      const backend = parseBackend(entry);
+      if (backend) parsed.push(backend);
+      else process.stderr.write("prompt-router: skipping invalid backend entry in config.\n");
+    }
+    if (parsed.length > 0) return parsed;
+  }
+
+  const backends = defaultBackends();
+  for (const backend of backends) {
+    if (backend.kind !== "chat") continue;
+    if (backend.id === "local") {
+      backend.baseUrl = cfg.local.baseUrl;
+      // The legacy `local.model` is singular; it becomes a one-element chain.
+      backend.models = [cfg.local.model];
+      backend.enabled = cfg.local.enabled;
+      backend.autoStart = cfg.local.autoStart;
+    } else if (backend.id === "openrouter") {
+      backend.baseUrl = cfg.openrouter.baseUrl;
+      backend.models = [...cfg.openrouter.answerModels];
+    }
+  }
+  return backends;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -157,6 +345,10 @@ export function resolveConfig(fileCfg: unknown, env: NodeJS.ProcessEnv): RouterC
   if (env.PROMPT_ROUTER_TIMEOUT) {
     cfg.timeoutMs = pickPositive(Number.parseInt(env.PROMPT_ROUTER_TIMEOUT, 10), cfg.timeoutMs);
   }
+
+  // Env overrides have already been folded into cfg.local, so deriving the
+  // backends last means the local backend inherits them.
+  cfg.backends = resolveBackends(file, cfg);
 
   return cfg;
 }

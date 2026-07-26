@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { resolveConfig } from "../src/config.js";
+import type { ChatBackend, ExecBackend } from "../src/types.js";
 
 describe("resolveConfig", () => {
   test("applies defaults when nothing is provided", () => {
@@ -55,5 +56,92 @@ describe("resolveConfig", () => {
     expect(resolveConfig({ thresholds: { modelTierLow: 5 } }, {}).thresholds.modelTierLow).toBe(
       0.35,
     );
+  });
+});
+
+function chat(cfg: ReturnType<typeof resolveConfig>, id: string): ChatBackend {
+  const found = cfg.backends.find((b) => b.id === id);
+  if (!found || found.kind !== "chat") throw new Error(`no chat backend ${id}`);
+  return found;
+}
+
+function exec(cfg: ReturnType<typeof resolveConfig>, id: string): ExecBackend {
+  const found = cfg.backends.find((b) => b.id === id);
+  if (!found || found.kind !== "exec") throw new Error(`no exec backend ${id}`);
+  return found;
+}
+
+describe("backend registry config", () => {
+  test("an empty config yields the three default backends", () => {
+    const cfg = resolveConfig({}, {});
+    expect(cfg.backends.map((b) => b.id)).toEqual(["claude", "local", "openrouter"]);
+    expect(exec(cfg, "claude").supportsPlan).toBe(true);
+    expect(chat(cfg, "local").categories).toEqual(["simple-qa"]);
+    expect(chat(cfg, "openrouter").categories).toEqual(["simple-qa", "deep-qa"]);
+  });
+
+  test("claude carries reference pricing for every tier", () => {
+    const pricing = exec(resolveConfig({}, {}), "claude").modelPricing;
+    expect(pricing["haiku"]).toEqual({ inputPer1M: 1, outputPer1M: 5 });
+    expect(pricing["sonnet"]).toEqual({ inputPer1M: 3, outputPer1M: 15 });
+    expect(pricing["opus"]).toEqual({ inputPer1M: 5, outputPer1M: 25 });
+  });
+
+  test("legacy local block is derived into the local backend", () => {
+    const cfg = resolveConfig(
+      { local: { baseUrl: "http://x:1/v1", model: "m", enabled: false, autoStart: false } },
+      {},
+    );
+    const local = chat(cfg, "local");
+    expect(local.baseUrl).toBe("http://x:1/v1");
+    expect(local.models).toEqual(["m"]);
+    expect(local.enabled).toBe(false);
+    expect(local.autoStart).toBe(false);
+  });
+
+  test("legacy answerModels become the openrouter backend chain", () => {
+    const cfg = resolveConfig({ openrouter: { answerModels: ["a", "b"] } }, {});
+    expect(chat(cfg, "openrouter").models).toEqual(["a", "b"]);
+  });
+
+  test("an explicit backends array replaces the defaults", () => {
+    const cfg = resolveConfig(
+      {
+        backends: [
+          { id: "aider", kind: "exec", command: "aider", args: ["--message", "{prompt}"] },
+        ],
+      },
+      {},
+    );
+    expect(cfg.backends.map((b) => b.id)).toEqual(["aider"]);
+    const aider = exec(cfg, "aider");
+    expect(aider.args).toEqual(["--message", "{prompt}"]);
+    expect(aider.supportsPlan).toBe(false);
+    expect(aider.supportsModelTier).toBe(false);
+    expect(aider.enabled).toBe(true);
+  });
+
+  test("an invalid backend entry is skipped, the rest survive", () => {
+    const cfg = resolveConfig(
+      {
+        backends: [
+          { id: "", kind: "exec", command: "x", args: [] },
+          { id: "nokind", command: "x", args: [] },
+          { id: "ok", kind: "exec", command: "ok", args: ["{prompt}"] },
+        ],
+      },
+      {},
+    );
+    expect(cfg.backends.map((b) => b.id)).toEqual(["ok"]);
+  });
+
+  test("env overrides apply to the local backend", () => {
+    const cfg = resolveConfig(
+      {},
+      { PROMPT_ROUTER_LOCAL_URL: "http://env:9/v1", PROMPT_ROUTER_LOCAL_MODEL: "envmodel" },
+    );
+    const local = chat(cfg, "local");
+    expect(local.baseUrl).toBe("http://env:9/v1");
+    expect(local.models).toEqual(["envmodel"]);
   });
 });

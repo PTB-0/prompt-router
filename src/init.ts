@@ -126,7 +126,7 @@ export async function runInit(): Promise<void> {
 
   if (!prompter.closed) rl.close();
 
-  const config: Omit<RouterConfig, "openrouter"> & { openrouter: Omit<RouterConfig["openrouter"], "apiKey"> } = {
+  const config: Omit<RouterConfig, "openrouter" | "backends"> & { openrouter: Omit<RouterConfig["openrouter"], "apiKey"> } = {
     openrouter: {
       baseUrl: existing.openrouter.baseUrl,
       classifierModels: existing.openrouter.classifierModels,
