@@ -1,20 +1,31 @@
 import * as readline from "readline";
 import pc from "picocolors";
-import type { Classification, RouteDecision, RouteTarget } from "./types.js";
+import type { Backend, Classification, Dispatch } from "./types.js";
 
 const WIDTH = Math.min(process.stderr.columns ?? 80, 100);
 const LINE = "─".repeat(WIDTH);
 const TIMEOUT_MS = 15_000;
 
-export const TARGET_LABELS: Record<RouteTarget, string> = {
-  claude: "Claude Code",
-  local: "local model",
-  openrouter: "OpenRouter",
-};
-
 export interface RouteChoice {
   action: "accept" | "reject" | "edit";
-  overrideTarget?: RouteTarget;
+  overrideBackendId?: string;
+}
+
+/**
+ * Numeric keys address the candidates positionally; the original c/l/o letters
+ * stay bound to their backends so existing muscle memory keeps working.
+ */
+const LEGACY_KEYS: Record<string, string> = { c: "claude", l: "local", o: "openrouter" };
+
+export function overrideKeyMap(candidates: readonly Backend[]): Map<string, string> {
+  const keys = new Map<string, string>();
+  candidates.slice(0, 3).forEach((backend, index) => {
+    keys.set(String(index + 1), backend.id);
+  });
+  for (const [key, id] of Object.entries(LEGACY_KEYS)) {
+    if (candidates.some((backend) => backend.id === id)) keys.set(key, id);
+  }
+  return keys;
 }
 
 export type PlanChoice = "accept" | "skip" | "edit";
@@ -22,7 +33,7 @@ export type PlanChoice = "accept" | "skip" | "edit";
 export function showRouting(
   original: string,
   optimized: string,
-  decision: RouteDecision,
+  dispatch: Dispatch,
   detail: string,
   cls: Classification | null,
 ): void {
@@ -39,8 +50,8 @@ export function showRouting(
     err.write(pc.green("  " + optimized.replace(/\n/g, "\n  ")) + "\n\n");
   }
 
-  const planNote = decision.planFirst ? pc.cyan(" · plan-first") : "";
-  const uncertainNote = decision.uncertain ? pc.yellow(" · low confidence") : "";
+  const planNote = dispatch.planFirst ? pc.cyan(" · plan-first") : "";
+  const uncertainNote = dispatch.uncertain ? pc.yellow(" · low confidence") : "";
   err.write(pc.bold(`  ROUTE → ${detail}`) + planNote + uncertainNote + "\n");
   if (cls) {
     err.write(
@@ -52,15 +63,21 @@ export function showRouting(
   err.write("\n" + pc.dim(LINE) + "\n");
 }
 
-export function askRouteChoice(): Promise<RouteChoice> {
+export function askRouteChoice(candidates: readonly Backend[]): Promise<RouteChoice> {
   // Piped/CI stdin can't answer (and its data must not be eaten as menu
   // keystrokes) — take the default immediately instead of pretending to wait.
   if (!process.stdin.isTTY) {
     process.stderr.write(pc.dim("  non-interactive session — accepting the route\n"));
     return Promise.resolve({ action: "accept" });
   }
+  const keys = overrideKeyMap(candidates);
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+
+    const overrides = candidates
+      .slice(0, 3)
+      .map((backend, index) => pc.magenta(`[${index + 1}]`) + pc.dim(` ${backend.label}  `))
+      .join("");
 
     process.stderr.write(
       "  " +
@@ -70,12 +87,7 @@ export function askRouteChoice(): Promise<RouteChoice> {
         pc.dim("o, original  ") +
         pc.cyan("[e]") +
         pc.dim("dit  ") +
-        pc.magenta("[c]") +
-        pc.dim("laude  ") +
-        pc.magenta("[l]") +
-        pc.dim("ocal  ") +
-        pc.magenta("[o]") +
-        pc.dim("penrouter  ") +
+        overrides +
         pc.dim(`(${TIMEOUT_MS / 1000}s timeout → Y): `),
     );
 
@@ -97,12 +109,11 @@ export function askRouteChoice(): Promise<RouteChoice> {
 
     rl.once("line", (line) => {
       const answer = line.trim().toLowerCase();
-      if (answer === "n" || answer === "no") finish({ action: "reject" });
-      else if (answer === "e" || answer === "edit") finish({ action: "edit" });
-      else if (answer === "c") finish({ action: "accept", overrideTarget: "claude" });
-      else if (answer === "l") finish({ action: "accept", overrideTarget: "local" });
-      else if (answer === "o") finish({ action: "accept", overrideTarget: "openrouter" });
-      else finish({ action: "accept" });
+      if (answer === "n" || answer === "no") return finish({ action: "reject" });
+      if (answer === "e" || answer === "edit") return finish({ action: "edit" });
+      const override = keys.get(answer);
+      if (override) return finish({ action: "accept", overrideBackendId: override });
+      finish({ action: "accept" });
     });
   });
 }
