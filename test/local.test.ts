@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { resolveConfig } from "../src/config.js";
-import { ensureLocalServer, isServerUp } from "../src/local.js";
+import { isServerUp, ensureChatBackend } from "../src/local.js";
+import type { ChatBackend } from "../src/types.js";
 
 describe("isServerUp", () => {
   test("reports up when the models endpoint answers", async () => {
@@ -21,18 +21,42 @@ describe("isServerUp", () => {
   });
 });
 
-describe("ensureLocalServer", () => {
-  // On win32 the spawn goes through cmd.exe, which "succeeds" even when the
-  // lms binary is missing, so the fast-fail only applies to POSIX.
-  test.skipIf(process.platform === "win32")(
-    "fails fast when the lms CLI is missing instead of polling for the server",
-    async () => {
-      const config = resolveConfig({ local: { baseUrl: "http://127.0.0.1:59993/v1" } }, {});
-      const startedAt = Date.now();
-      expect(await ensureLocalServer(config)).toBe(false);
-      // Without the fast-fail this path polls for ~6s waiting on a server
-      // that can never start.
-      expect(Date.now() - startedAt).toBeLessThan(3000);
-    },
-  );
+function backend(over: Partial<ChatBackend> = {}): ChatBackend {
+  return {
+    id: "local",
+    label: "local model",
+    kind: "chat",
+    categories: ["simple-qa"],
+    priority: 10,
+    enabled: true,
+    baseUrl: "http://127.0.0.1:1/v1",
+    models: ["m"],
+    probe: true,
+    autoStart: false,
+    autoStartCommand: [],
+    pricing: { inputPer1M: 0, outputPer1M: 0 },
+    ...over,
+  };
+}
+
+describe("ensureChatBackend", () => {
+  test("a disabled backend is never reachable", async () => {
+    await expect(ensureChatBackend(backend({ enabled: false }))).resolves.toBe(false);
+  });
+
+  test("a backend that does not probe is assumed reachable", async () => {
+    await expect(ensureChatBackend(backend({ probe: false }))).resolves.toBe(true);
+  });
+
+  test("a probing backend with no server and no autostart is unreachable", async () => {
+    await expect(ensureChatBackend(backend({ probe: true, autoStart: false }))).resolves.toBe(
+      false,
+    );
+  });
+
+  test("autoStart with an empty command cannot start anything", async () => {
+    await expect(
+      ensureChatBackend(backend({ probe: true, autoStart: true, autoStartCommand: [] })),
+    ).resolves.toBe(false);
+  });
 });

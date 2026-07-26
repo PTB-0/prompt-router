@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import type { RouterConfig } from "./config.js";
+import type { ChatBackend } from "./types.js";
 
 const PROBE_TIMEOUT_MS = 1500;
 const START_POLL_ATTEMPTS = 6;
@@ -26,17 +26,26 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function ensureLocalServer(config: RouterConfig): Promise<boolean> {
-  if (!config.local.enabled) return false;
-  if (await isServerUp(config.local.baseUrl, PROBE_TIMEOUT_MS)) return true;
-  if (!config.local.autoStart) return false;
+/**
+ * Probe a chat backend, starting its server first when configured to. Remote
+ * providers set `probe: false` — there is nothing local to wake, and paying a
+ * round trip to find that out on every prompt is wasted latency.
+ */
+export async function ensureChatBackend(backend: ChatBackend): Promise<boolean> {
+  if (!backend.enabled) return false;
+  if (!backend.probe) return true;
+  if (await isServerUp(backend.baseUrl, PROBE_TIMEOUT_MS)) return true;
+  if (!backend.autoStart) return false;
 
-  // LM Studio ships the `lms` CLI; `server start` is a no-op when already running.
-  // A missing binary surfaces as an async "error" event (ENOENT), not a throw —
-  // bail out immediately instead of polling for a server that can never start.
+  const [command, ...args] = backend.autoStartCommand;
+  if (!command) return false;
+
+  // The start command is a no-op when the server is already running. A missing
+  // binary surfaces as an async "error" event (ENOENT), not a throw — bail out
+  // immediately instead of polling for a server that can never start.
   const started = await new Promise<boolean>((resolve) => {
     try {
-      const child = spawn("lms", ["server", "start"], {
+      const child = spawn(command, args, {
         shell: process.platform === "win32",
         stdio: "ignore",
         detached: true,
@@ -52,7 +61,7 @@ export async function ensureLocalServer(config: RouterConfig): Promise<boolean> 
 
   for (let attempt = 0; attempt < START_POLL_ATTEMPTS; attempt++) {
     await delay(START_POLL_INTERVAL_MS);
-    if (await isServerUp(config.local.baseUrl, PROBE_TIMEOUT_MS)) return true;
+    if (await isServerUp(backend.baseUrl, PROBE_TIMEOUT_MS)) return true;
   }
   return false;
 }
