@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { chatCompletion, extractSseDeltas, streamChat, withModelFallback } from "../src/llm.js";
+import type { TokenUsage } from "../src/types.js";
 
 describe("withModelFallback", () => {
   test("returns the first successful result", async () => {
@@ -115,16 +116,88 @@ describe("extractSseDeltas", () => {
     const chunk =
       'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n' +
       'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n';
-    expect(extractSseDeltas(chunk)).toEqual({ deltas: ["Hel", "lo"], rest: "" });
+    expect(extractSseDeltas(chunk)).toEqual({ deltas: ["Hel", "lo"], usage: null, rest: "" });
   });
 
   test("keeps a partial event in the buffer", () => {
     const chunk = 'data: {"choices":[{"delta":{"content":"a"}}]}\n\ndata: {"cho';
-    expect(extractSseDeltas(chunk)).toEqual({ deltas: ["a"], rest: 'data: {"cho' });
+    expect(extractSseDeltas(chunk)).toEqual({
+      deltas: ["a"],
+      usage: null,
+      rest: 'data: {"cho',
+    });
   });
 
   test("ignores the done marker and malformed events", () => {
     const chunk = "data: [DONE]\n\ndata: not-json\n\n";
     expect(extractSseDeltas(chunk).deltas).toEqual([]);
+  });
+});
+
+describe("usage capture", () => {
+  test("extractSseDeltas surfaces a trailing usage event", () => {
+    const buffer =
+      'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34}}\n\n';
+    const { deltas, usage } = extractSseDeltas(buffer);
+    expect(deltas).toEqual(["hi"]);
+    expect(usage).toEqual({ inputTokens: 12, outputTokens: 34, estimated: false });
+  });
+
+  test("extractSseDeltas reports null usage when the stream omits it", () => {
+    const { usage } = extractSseDeltas('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');
+    expect(usage).toBeNull();
+  });
+
+  test("chatCompletion reports usage from the response body", async () => {
+    const seen: TokenUsage[] = [];
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 5, completion_tokens: 7 },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    const text = await chatCompletion({
+      baseUrl: "http://x/v1",
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      timeoutMs: 1000,
+      fetchImpl,
+      onUsage: (usage) => seen.push(usage),
+    });
+
+    expect(text).toBe("ok");
+    expect(seen).toEqual([{ inputTokens: 5, outputTokens: 7, estimated: false }]);
+  });
+
+  test("streamChat reports usage captured from the stream", async () => {
+    const body =
+      'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}\n\n' +
+      "data: [DONE]\n\n";
+    const fetchImpl = (async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      })) as unknown as typeof fetch;
+
+    const seen: TokenUsage[] = [];
+    const text = await streamChat(
+      {
+        baseUrl: "http://x/v1",
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+        timeoutMs: 1000,
+        fetchImpl,
+        onUsage: (usage) => seen.push(usage),
+      },
+      () => {},
+    );
+
+    expect(text).toBe("hi");
+    expect(seen).toEqual([{ inputTokens: 3, outputTokens: 4, estimated: false }]);
   });
 });

@@ -1,3 +1,5 @@
+import type { TokenUsage } from "./types.js";
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -13,6 +15,8 @@ export interface ChatRequest {
   fetchImpl?: typeof fetch;
   /** Called with a content-free reason (e.g. "http_404", "AbortError") when the request fails. */
   onFailure?: (reason: string) => void;
+  /** Called with exact token counts when the provider reports them. */
+  onUsage?: (usage: TokenUsage) => void;
 }
 
 function buildHeaders(apiKey: string | undefined): Record<string, string> {
@@ -35,6 +39,17 @@ function messageContent(data: unknown): string | null {
   if (typeof message !== "object" || message === null) return null;
   const content = (message as Record<string, unknown>)["content"];
   return typeof content === "string" ? content.trim() : null;
+}
+
+function usageFrom(data: unknown): TokenUsage | null {
+  if (typeof data !== "object" || data === null) return null;
+  const usage = (data as Record<string, unknown>)["usage"];
+  if (typeof usage !== "object" || usage === null) return null;
+  const record = usage as Record<string, unknown>;
+  const input = record["prompt_tokens"];
+  const output = record["completion_tokens"];
+  if (typeof input !== "number" || typeof output !== "number") return null;
+  return { inputTokens: input, outputTokens: output, estimated: false };
 }
 
 function deltaContent(data: unknown): string | null {
@@ -64,8 +79,13 @@ export async function withModelFallback<T>(
   return null;
 }
 
-export function extractSseDeltas(buffer: string): { deltas: string[]; rest: string } {
+export function extractSseDeltas(buffer: string): {
+  deltas: string[];
+  usage: TokenUsage | null;
+  rest: string;
+} {
   const deltas: string[] = [];
+  let usage: TokenUsage | null = null;
   let rest = buffer;
   for (;;) {
     const separator = rest.indexOf("\n\n");
@@ -84,9 +104,12 @@ export function extractSseDeltas(buffer: string): { deltas: string[]; rest: stri
       }
       const delta = deltaContent(parsed);
       if (delta) deltas.push(delta);
+      // Providers emit usage on a trailing event; the last one wins.
+      const eventUsage = usageFrom(parsed);
+      if (eventUsage) usage = eventUsage;
     }
   }
-  return { deltas, rest };
+  return { deltas, usage, rest };
 }
 
 export async function chatCompletion(req: ChatRequest): Promise<string | null> {
@@ -108,7 +131,10 @@ export async function chatCompletion(req: ChatRequest): Promise<string | null> {
       req.onFailure?.(`http_${response.status}`);
       return null;
     }
-    return messageContent(await response.json());
+    const data: unknown = await response.json();
+    const usage = usageFrom(data);
+    if (usage) req.onUsage?.(usage);
+    return messageContent(data);
   } catch (err) {
     req.onFailure?.(err instanceof Error ? err.name : "unknown_error");
     return null;
@@ -133,6 +159,7 @@ export async function streamChat(
         messages: req.messages,
         max_tokens: req.maxTokens ?? 4096,
         stream: true,
+        stream_options: { include_usage: true },
       }),
       signal: controller.signal,
     });
@@ -145,6 +172,7 @@ export async function streamChat(
     const decoder = new TextDecoder();
     let buffer = "";
     let full = "";
+    let streamUsage: TokenUsage | null = null;
     for (;;) {
       // A healthy stream may run for minutes, but a silent one may not: the
       // watchdog re-arms on every chunk, so only timeoutMs of total silence
@@ -154,13 +182,15 @@ export async function streamChat(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const { deltas, rest } = extractSseDeltas(buffer);
+      const { deltas, usage, rest } = extractSseDeltas(buffer);
       buffer = rest;
+      if (usage) streamUsage = usage;
       for (const delta of deltas) {
         full += delta;
         onDelta(delta);
       }
     }
+    if (streamUsage) req.onUsage?.(streamUsage);
     return full || null;
   } catch (err) {
     req.onFailure?.(err instanceof Error ? err.name : "unknown_error");
