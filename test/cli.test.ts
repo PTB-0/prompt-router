@@ -64,8 +64,45 @@ interface CliResult {
   stderr: string;
 }
 
+const STRIPPED_ENV_VARS = [
+  "OPENROUTER_API_KEY",
+  "PROMPT_ROUTER_LOCAL_URL",
+  "PROMPT_ROUTER_LOCAL_MODEL",
+  "PROMPT_ROUTER_TIMEOUT",
+  "EDITOR",
+  // Windows' documented opt-out for the implicit current-directory search
+  // (see resolveWindowsCommand in src/winShell.ts). It is set in some real
+  // environments — including the one this suite was developed on — and
+  // leaving it in place makes the cwd-resolution test below fail for a
+  // reason that has nothing to do with the code under test.
+  "NoDefaultCurrentDirectoryInExePath",
+];
+
+/**
+ * Removes an environment variable from a plain env object, case-insensitively.
+ *
+ * `delete env.SOME_VAR` is not good enough on Windows. Windows environment
+ * variables are case-insensitive, but `{ ...process.env }` is an ordinary
+ * object whose `delete` is not — and the case a name is *stored* under is not
+ * guaranteed to be the case written here. Under Vitest on Windows this test
+ * process receives them uppercased, so `NoDefaultCurrentDirectoryInExePath`
+ * arrives as `NODEFAULTCURRENTDIRECTORYINEXEPATH`: reads still work (Node's
+ * `process.env` is a case-insensitive proxy there) but a mixed-case `delete`
+ * on the spread copy silently misses, and the variable reaches the child
+ * anyway. Anything whose name is not already all-caps needs this.
+ */
+function stripEnv(env: NodeJS.ProcessEnv, name: string): void {
+  const target = name.toLowerCase();
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === target) delete env[key];
+  }
+}
+
 /**
  * Spawns the built binary with a hermetic, non-TTY environment.
+ *
+ * `envOverrides` is applied last, after the strips below — so a test can put
+ * a variable back deliberately to pin behaviour that depends on it.
  *
  * Deliberately async (`spawn`, not `spawnSync`): `spawnSync` blocks this
  * process's own event loop until the child exits, and the "actually served"
@@ -75,14 +112,15 @@ interface CliResult {
  * child can never get a response while waiting on the parent. Confirmed by
  * reproducing the deadlock directly before switching to `spawn`.
  */
-function runCli(dir: string, args: string[]): Promise<CliResult> {
+function runCli(
+  dir: string,
+  args: string[],
+  envOverrides: Record<string, string> = {},
+): Promise<CliResult> {
   const env = { ...process.env };
-  delete env.OPENROUTER_API_KEY;
-  delete env.PROMPT_ROUTER_LOCAL_URL;
-  delete env.PROMPT_ROUTER_LOCAL_MODEL;
-  delete env.PROMPT_ROUTER_TIMEOUT;
-  delete env.EDITOR;
+  for (const name of STRIPPED_ENV_VARS) stripEnv(env, name);
   env.PROMPT_ROUTER_DIR = dir;
+  Object.assign(env, envOverrides);
 
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [DIST_ENTRY, ...args], {
@@ -136,6 +174,21 @@ function execBackendConfig(overrides: Record<string, unknown> = {}): Record<stri
     modelPricing: {},
     ...overrides,
   };
+}
+
+/**
+ * A minimal Windows batch file that proves it actually ran (rather than
+ * merely being spawned and immediately failing) by writing a distinctive
+ * marker to stdout and exiting 0. Deliberately ignores its own arguments —
+ * this test only needs to prove resolution + execution, not argument
+ * plumbing, so there is no need to fight cmd.exe's batch-file escaping.
+ */
+function writeSentinelCmd(dir: string): void {
+  fs.writeFileSync(
+    path.join(dir, "sentinel.cmd"),
+    "@echo off\r\necho SENTINEL_RAN\r\nexit /b 0\r\n",
+    "utf8",
+  );
 }
 
 function chatBackendConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -232,6 +285,71 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
       expect(result.status).not.toBe(0);
       expect(result.stdout).toContain(prompt);
       expect(result.stderr).toMatch(/failed to run/);
+      // Pin the literal banner, not just the prompt text: the prompt alone
+      // also appears in the routing preview, so without this the test would
+      // still pass if the "not lost" path were removed entirely.
+      expect(result.stderr).toContain("Your prompt, so it is not lost:");
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  // Both cwd-resolution tests are win32-only because the behaviour itself is:
+  // implicit current-directory search is a cmd.exe/CreateProcess rule with no
+  // POSIX counterpart, and commandUnresolvable (src/index.ts) is a documented
+  // no-op off win32. On Linux the sentinel would simply fail to spawn, which
+  // would test nothing. CI runs windows-latest, so these do get exercised.
+  const onWindows = process.platform === "win32";
+
+  test.runIf(onWindows)(
+    "an exec backend resolved only via the current working directory (not PATH) genuinely runs",
+    async () => {
+      // Round-3 regression coverage: resolveWindowsCommand (src/winShell.ts)
+      // now searches cwd before PATH for a bare command name, matching
+      // cmd.exe's own resolution order. Before that fix, commandUnresolvable
+      // (src/index.ts) would have wrongly refused this command — it is
+      // deliberately absent from PATH, resolvable only via cwd — and
+      // diverted the prompt into the "command not found" fallback instead
+      // of actually running it. runCli's cwd is this same temp dir, so a
+      // command resolvable only there is exactly the scenario that broke.
+      const dir = makeTmpDir();
+      writeSentinelCmd(dir);
+      writeConfig(dir, {
+        backends: [execBackendConfig({ id: "sentinelexec", command: "sentinel" })],
+      });
+      const prompt = "please refactor the auth module for clarity";
+      const result = await runCli(dir, ["--to", "sentinelexec", prompt]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("SENTINEL_RAN");
+      expect(result.stderr).not.toContain("Your prompt, so it is not lost:");
+      expect(result.stderr).not.toMatch(/failed to run/);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test.runIf(onWindows)(
+    "an exec backend in cwd is refused when NoDefaultCurrentDirectoryInExePath disables that search",
+    async () => {
+      // The mirror of the test above, pinning the opt-out resolveWindowsCommand
+      // deliberately honours. With this variable present, cmd.exe does not
+      // search cwd either — so the command genuinely cannot run, and refusing
+      // before spawning is the correct answer rather than a false negative.
+      // Same fixture as above, one environment variable apart: that isolates
+      // the opt-out as the only cause of the difference in outcome.
+      const dir = makeTmpDir();
+      writeSentinelCmd(dir);
+      writeConfig(dir, {
+        backends: [execBackendConfig({ id: "sentinelexec", command: "sentinel" })],
+      });
+      const prompt = "please refactor the auth module for clarity";
+      const result = await runCli(dir, ["--to", "sentinelexec", prompt], {
+        NoDefaultCurrentDirectoryInExePath: "1",
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).not.toContain("SENTINEL_RAN");
+      expect(result.stderr).toMatch(/failed to run sentinel: command not found/);
+      // The prompt survives the refusal — the guarantee the guard exists for.
+      expect(result.stderr).toContain("Your prompt, so it is not lost:");
+      expect(result.stdout).toContain(prompt);
     },
     CLI_TIMEOUT_MS,
   );

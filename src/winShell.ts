@@ -47,16 +47,37 @@ export function isBatchExt(filePath: string): boolean {
 
 /**
  * Resolve a bare command name to the file cmd.exe would actually run, following
- * PATH + PATHEXT the way cmd does (first matching directory × extension wins).
- * Returns null if nothing matches. An explicit path or extension is used as-is.
+ * the same search cmd does: for a bare name (no directory separator), the
+ * current directory first, then PATH, then PATHEXT (first matching directory
+ * × extension wins) — cmd.exe checks cwd before PATH, which is why a bare-name
+ * script sitting in a project directory "just runs" with no `./` prefix.
+ *
+ * That cwd check is itself conditional: Windows' documented opt-out is the
+ * `NoDefaultCurrentDirectoryInExePath` environment variable — if it exists in
+ * the process's environment (its value doesn't matter, only its presence),
+ * the implicit current-directory search is skipped, by cmd.exe as much as by
+ * CreateProcess's own module search. Verified empirically: with that variable
+ * set, `cmd.exe /d /s /c "aBareCwdOnlyCommand"` genuinely fails to find a
+ * command sitting right there in cwd; clearing it, the same invocation finds
+ * it. Ignoring that variable here would make this resolver a false positive
+ * on a hardened machine — it would say "this will run" for a command the
+ * real cmd.exe then refuses, exactly the failure mode this function exists
+ * to prevent.
+ *
+ * Returns null if nothing matches. An explicit path or extension is used as-is,
+ * with no cwd fallback — a path-qualified command means exactly that path.
  */
 export function resolveWindowsCommand(command: string): string | null {
   const hasDir = command.includes("/") || command.includes("\\");
   const hasExt = path.extname(command) !== "";
   const base = hasDir ? path.basename(command) : command;
+  const searchCwd = !hasDir && !("NoDefaultCurrentDirectoryInExePath" in process.env);
   const dirs = hasDir
     ? [path.dirname(command)]
-    : (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+    : [
+        ...(searchCwd ? [process.cwd()] : []),
+        ...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean),
+      ];
   const pathext = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .filter(Boolean);

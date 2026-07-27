@@ -98,6 +98,8 @@ describe("resolveWindowsCommand", () => {
   let dir: string;
   const savedPath = process.env.PATH;
   const savedPathext = process.env.PATHEXT;
+  const hadNoDefaultCwd = "NoDefaultCurrentDirectoryInExePath" in process.env;
+  const savedNoDefaultCwd = process.env.NoDefaultCurrentDirectoryInExePath;
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-resolve-"));
@@ -106,6 +108,8 @@ describe("resolveWindowsCommand", () => {
   afterEach(() => {
     process.env.PATH = savedPath;
     process.env.PATHEXT = savedPathext;
+    if (hadNoDefaultCwd) process.env.NoDefaultCurrentDirectoryInExePath = savedNoDefaultCwd;
+    else delete process.env.NoDefaultCurrentDirectoryInExePath;
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -134,5 +138,60 @@ describe("resolveWindowsCommand", () => {
     process.env.PATH = dir;
     process.env.PATHEXT = PATHEXT;
     expect(resolveWindowsCommand("claude")).toBeNull();
+  });
+
+  it("resolves a bare command via the current directory when it is absent from PATH", () => {
+    // cmd.exe checks cwd before PATH for a bare name — a script sitting in a
+    // project directory "just runs" with no ./ prefix. PATH is deliberately
+    // empty here so a match can only come from the cwd fallback. The opt-out
+    // variable is explicitly cleared so this test exercises cwd-search
+    // regardless of whether the machine running it happens to have that
+    // variable set (see the next test — it can and does, on at least one
+    // real machine this suite ran on).
+    fs.writeFileSync(path.join(dir, "claude.exe"), "");
+    process.env.PATH = "";
+    process.env.PATHEXT = PATHEXT;
+    delete process.env.NoDefaultCurrentDirectoryInExePath;
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      expect(resolveWindowsCommand("claude")).toBe(path.join(dir, "claude.exe"));
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it("honours NoDefaultCurrentDirectoryInExePath and skips the cwd search when it is set", () => {
+    // Windows' documented opt-out: cmd.exe's own resolution (not just
+    // CreateProcess's module search) skips the implicit current-directory
+    // check when this variable exists in the process environment, regardless
+    // of its value. Verified empirically against a real cmd.exe /c
+    // invocation on Windows: with this variable set, a bare command sitting
+    // in cwd (and absent from PATH) is genuinely "not recognized"; clearing
+    // it, the same invocation finds it. Ignoring this here would make the
+    // resolver a false positive on a hardened machine.
+    fs.writeFileSync(path.join(dir, "claude.exe"), "");
+    process.env.PATH = "";
+    process.env.PATHEXT = PATHEXT;
+    process.env.NoDefaultCurrentDirectoryInExePath = "1";
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      expect(resolveWindowsCommand("claude")).toBeNull();
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it("does not give a path-qualified command a cwd fallback", () => {
+    // A same-named file sits directly in `dir`, but the command names an
+    // explicit (nonexistent) subdirectory of it. An explicit path must mean
+    // exactly that path — it must not fall back to searching cwd generally,
+    // which is exactly the behaviour the bare-name case above gained.
+    fs.writeFileSync(path.join(dir, "claude.exe"), "");
+    process.env.PATH = dir;
+    process.env.PATHEXT = PATHEXT;
+    const missingPath = path.join(dir, "nonexistent-subdir", "claude.exe");
+    expect(resolveWindowsCommand(missingPath)).toBeNull();
   });
 });
