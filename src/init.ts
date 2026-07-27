@@ -2,8 +2,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
 import pc from "picocolors";
-import { configDir, resolveConfig, type RouterConfig } from "./config.js";
+import { configDir, defaultBackends, resolveConfig, type RouterConfig } from "./config.js";
 import { isServerUp } from "./local.js";
+import type { Backend, ChatBackend } from "./types.js";
 
 const KEY_VALIDATE_TIMEOUT_MS = 3000;
 const LOCAL_PROBE_TIMEOUT_MS = 1500;
@@ -34,6 +35,63 @@ export function mergeEnvKey(existingText: string, apiKey: string): string {
   if (idx >= 0) lines[idx] = entry;
   else lines.push(entry);
   return lines.join("\n") + "\n";
+}
+
+/** The local-model answers — the only part of the wizard that branches. */
+export interface InitAnswers {
+  /** null when the user declined a local model. */
+  localBaseUrl: string | null;
+  localModel: string | null;
+  localAutoStart: boolean;
+}
+
+/**
+ * Builds the `backends` section of the config the wizard writes. Pure, and
+ * separated from the prompting so it can be asserted on directly.
+ *
+ * `existing` is the registry already in effect — the declared one, or the
+ * defaults derived from a legacy config. Patching it rather than rebuilding
+ * from `defaultBackends()` matters once the registry is user-editable: the
+ * wizard only ever asks about the local model, so re-running setup must not
+ * silently drop a backend someone added by hand.
+ */
+export function buildInitConfig(
+  answers: InitAnswers,
+  existing: Backend[] = defaultBackends(),
+): { backends: Backend[] } {
+  const wantsLocal = Boolean(answers.localBaseUrl && answers.localModel);
+  const backends = structuredClone(existing);
+  const local = backends.find((b): b is ChatBackend => b.kind === "chat" && b.id === "local");
+
+  if (!local) {
+    // Nothing to patch. Only add one back if the user actually asked for it —
+    // a deleted local backend plus a declined local model means they want none.
+    if (wantsLocal) {
+      const fresh = defaultBackends().find(
+        (b): b is ChatBackend => b.kind === "chat" && b.id === "local",
+      );
+      if (fresh) backends.push(applyLocalAnswers(fresh, answers));
+    }
+    return { backends };
+  }
+
+  applyLocalAnswers(local, answers);
+  return { backends };
+}
+
+function applyLocalAnswers(local: ChatBackend, answers: InitAnswers): ChatBackend {
+  if (answers.localBaseUrl && answers.localModel) {
+    local.baseUrl = answers.localBaseUrl;
+    // The wizard asks for a single model name; it becomes a one-element chain.
+    local.models = [answers.localModel];
+    local.autoStart = answers.localAutoStart;
+    local.enabled = true;
+  } else {
+    // Disabled rather than removed: an obvious thing to flip back on, and the
+    // previously chosen address survives for whenever they do.
+    local.enabled = false;
+  }
+  return local;
 }
 
 interface Prompter {
@@ -103,14 +161,35 @@ export async function runInit(): Promise<void> {
     );
   }
 
-  const localEnabled = await askBoolean(prompter, "Use a local model", existing.local.enabled);
-  const local: RouterConfig["local"] = { ...existing.local, enabled: localEnabled };
+  // Defaults come from the resolved registry, so re-running setup offers back
+  // whatever the local backend currently says rather than the built-in values.
+  const existingLocal = existing.backends.find(
+    (b): b is ChatBackend => b.kind === "chat" && b.id === "local",
+  );
+  const answers: InitAnswers = {
+    localBaseUrl: null,
+    localModel: null,
+    localAutoStart: existingLocal?.autoStart ?? true,
+  };
+  const localEnabled = await askBoolean(prompter, "Use a local model", existingLocal?.enabled ?? true);
   if (localEnabled) {
-    local.baseUrl = await ask(prompter, "Local server URL", existing.local.baseUrl);
-    local.model = await ask(prompter, "Local model name", existing.local.model);
-    local.autoStart = await askBoolean(prompter, "Auto-start the local server", existing.local.autoStart);
+    answers.localBaseUrl = await ask(
+      prompter,
+      "Local server URL",
+      existingLocal?.baseUrl ?? existing.local.baseUrl,
+    );
+    answers.localModel = await ask(
+      prompter,
+      "Local model name",
+      existingLocal?.models[0] ?? existing.local.model,
+    );
+    answers.localAutoStart = await askBoolean(
+      prompter,
+      "Auto-start the local server",
+      answers.localAutoStart,
+    );
     process.stdout.write(pc.dim("  checking local server...\n"));
-    const up = await isServerUp(local.baseUrl, LOCAL_PROBE_TIMEOUT_MS);
+    const up = await isServerUp(answers.localBaseUrl, LOCAL_PROBE_TIMEOUT_MS);
     process.stdout.write(up ? pc.green("  ✓ local server found\n") : pc.yellow("  ! local server not reachable yet\n"));
   }
 
@@ -126,14 +205,21 @@ export async function runInit(): Promise<void> {
 
   if (!prompter.closed) rl.close();
 
-  const config: Omit<RouterConfig, "openrouter" | "backends"> & { openrouter: Omit<RouterConfig["openrouter"], "apiKey"> } = {
+  // The written file carries `backends` and no legacy `local` / `answerModels`
+  // block: those two exist only to derive a registry for configs written
+  // before it existed (see resolveBackends in config.ts), and a file that has
+  // both would show the same setting twice with only one of them read. The
+  // classifier and planner model chains stay — they are router infrastructure,
+  // not backends.
+  const config: Omit<RouterConfig, "openrouter" | "local"> & {
+    openrouter: Omit<RouterConfig["openrouter"], "apiKey" | "answerModels">;
+  } = {
     openrouter: {
       baseUrl: existing.openrouter.baseUrl,
       classifierModels: existing.openrouter.classifierModels,
-      answerModels: existing.openrouter.answerModels,
       planModels: existing.openrouter.planModels,
     },
-    local,
+    ...buildInitConfig(answers, existing.backends),
     modelSelection: { enabled: existing.modelSelection.enabled },
     thresholds: { confidence, planComplexity, modelTierLow: existing.thresholds.modelTierLow, modelTierHigh: existing.thresholds.modelTierHigh },
     session: { maxMessages },

@@ -119,7 +119,7 @@ prompt-router "what's the difference between TCP and UDP?"    # → local model
 prompt-router "compare event sourcing with CRUD for a bank"   # → OpenRouter
 
 prompt-router -c "and which one scales better?"   # follow-up: carries conversation memory
-prompt-router --to local "explain this simply"    # force a backend (claude | local | openrouter)
+prompt-router --to local "explain this simply"    # force a backend — any configured id
 prompt-router --model opus --effort high "..."    # force Claude Code's model/effort for one run
 prompt-router --no-route "quick edit"             # skip everything, straight to Claude Code
 prompt-router --stats                             # how much Claude usage you've saved
@@ -175,8 +175,8 @@ local/OpenRouter routes.
 Any OpenAI-compatible server works — LM Studio, Ollama, llama.cpp, vLLM:
 
 - **LM Studio** (default): prompt-router probes `http://localhost:1234/v1`, and if the server is down it runs `lms server start` and waits for it to come up.
-- **Ollama or anything else**: point `local.baseUrl` at it (e.g. `http://localhost:11434/v1`) and set your model name.
-- **No GPU?** Set `local.enabled: false` (or just don't run a server) — simple questions route to OpenRouter instead. Nothing breaks.
+- **Ollama or anything else**: point the `local` backend's `baseUrl` at it (e.g. `http://localhost:11434/v1`) and set your model name.
+- **No GPU?** Set the `local` backend's `"enabled": false` (or just don't run a server) — simple questions route to OpenRouter instead. Nothing breaks.
 
 ## Configuration
 
@@ -185,23 +185,41 @@ Everything lives in `~/.config/prompt-router/` (override the directory with `PRO
 ```jsonc
 // ~/.config/prompt-router/config.json
 {
-  "local": {
-    "baseUrl": "http://localhost:1234/v1",
-    "model": "gemma-4-12b-qat",
-    "autoStart": true,          // try `lms server start` when the server is down
-    "enabled": true             // false = never route locally
-  },
-  "openrouter": {
-    "baseUrl": "https://openrouter.ai/api/v1",
-    "classifierModels": [       // fallback chains — first healthy model wins
+  "backends": [
+    {
+      "id": "claude", "kind": "exec", "label": "Claude Code",
+      "categories": ["code"], "priority": 10, "enabled": true,
+      "command": "claude",
+      "args": ["{model}", "{effort}", "{continue}", "{prompt}"],
+      "supportsModelTier": true, "supportsPlan": true, "supportsContinue": true
+    },
+    {
+      "id": "local", "kind": "chat", "label": "local model",
+      "categories": ["simple-qa"], "priority": 10, "enabled": true,
+      "baseUrl": "http://localhost:1234/v1",
+      "models": ["gemma-4-12b-qat"],
+      "probe": true,              // check /models before dispatching
+      "autoStart": true,          // try `lms server start` when the server is down
+      "autoStartCommand": ["lms", "server", "start"]
+    },
+    {
+      "id": "openrouter", "kind": "chat", "label": "OpenRouter",
+      "categories": ["simple-qa", "deep-qa"], "priority": 5, "enabled": true,
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",   // the NAME of the var, never the key
+      "models": [                 // fallback chain — first healthy model wins
+        "openai/gpt-oss-120b:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "qwen/qwen3-next-80b-a3b-instruct:free"
+      ]
+    }
+  ],
+  "openrouter": {                 // the classifier and planner — infrastructure,
+    "baseUrl": "https://openrouter.ai/api/v1",   // not routable backends
+    "classifierModels": [
       "openai/gpt-oss-20b:free",
       "nvidia/nemotron-3-super-120b-a12b:free",
       "meta-llama/llama-3.2-3b-instruct:free"
-    ],
-    "answerModels": [
-      "openai/gpt-oss-120b:free",
-      "nvidia/nemotron-3-super-120b-a12b:free",
-      "qwen/qwen3-next-80b-a3b-instruct:free"
     ],
     "planModels": [
       "openai/gpt-oss-120b:free",
@@ -226,11 +244,18 @@ Everything lives in `~/.config/prompt-router/` (override the directory with `PRO
 
 Free models come and go — the model lists are **fallback chains you can edit without waiting for a release**.
 
+Backends are matched to a category and ordered by `priority`: the highest-priority
+healthy one serves the prompt, and the rest become its fallback chain. Adding
+another coding agent, or a paid model for hard questions, is a config edit rather
+than a release. **A config without a `backends` key keeps working** — the three
+defaults above are derived from the older `local` / `openrouter.answerModels`
+blocks, so nothing needs migrating by hand.
+
 | Environment variable | Overrides |
 |---|---|
 | `OPENROUTER_API_KEY` | API key (required for classification, deep answers, plans) |
-| `PROMPT_ROUTER_LOCAL_URL` | `local.baseUrl` |
-| `PROMPT_ROUTER_LOCAL_MODEL` | `local.model` |
+| `PROMPT_ROUTER_LOCAL_URL` | the `local` backend's `baseUrl` |
+| `PROMPT_ROUTER_LOCAL_MODEL` | the `local` backend's `models` (replaces the chain) |
 | `PROMPT_ROUTER_TIMEOUT` | `timeoutMs` |
 | `PROMPT_ROUTER_DIR` | Config/session/stats directory |
 
@@ -252,7 +277,7 @@ prompt-router assumes things fail and never leaves you stranded:
 ## Privacy
 
 - **Prompt content is never logged.** Not in stats, not in the routing log.
-- `--stats` stores three counters in a local file. That's it.
+- `--stats` stores per-backend counts, token totals, and cost figures in a local file — still no prompt content.
 - The opt-in routing log (`logging.routingLog: true`) records timestamps, targets, and confidence flags — useful for tuning thresholds, still content-free.
 - Conversation memory (`-c`) lives in one local JSON file you can delete anytime with `--clear-session`.
 
@@ -274,7 +299,7 @@ Built test-first: every routing rule in `src/route.ts` and every heuristic in `s
 - [x] `prompt-router init` — interactive setup wizard
 - [ ] npm publish with GitHub Actions provenance
 - [ ] Reuse [prompt-op](https://github.com/PTB-0/prompt-op)'s optimizer as a library dependency
-- [ ] Per-backend capability manifests
+- [x] Per-backend capability manifests
 
 ## Related
 
