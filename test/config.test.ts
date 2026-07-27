@@ -135,7 +135,7 @@ describe("backend registry config", () => {
     expect(cfg.backends.map((b) => b.id)).toEqual(["ok"]);
   });
 
-  test("env overrides apply to the local backend", () => {
+  test("env overrides apply to the local backend derived from a legacy config", () => {
     const cfg = resolveConfig(
       {},
       { PROMPT_ROUTER_LOCAL_URL: "http://env:9/v1", PROMPT_ROUTER_LOCAL_MODEL: "envmodel" },
@@ -143,5 +143,41 @@ describe("backend registry config", () => {
     const local = chat(cfg, "local");
     expect(local.baseUrl).toBe("http://env:9/v1");
     expect(local.models).toEqual(["envmodel"]);
+  });
+
+  test("env overrides apply to a local backend the config declares", () => {
+    // The test above only covers the legacy derivation, which reads cfg.local
+    // (where the env overrides land). A declared `backends` array skips that
+    // path entirely — and since the setup wizard now writes one, this is the
+    // shape most configs will have, so the two documented env vars have to
+    // keep working here too.
+    const cfg = resolveConfig(
+      {
+        backends: [
+          {
+            id: "local",
+            kind: "chat",
+            label: "local model",
+            baseUrl: "http://localhost:1234/v1",
+            models: ["from-file"],
+            categories: ["simple-qa"],
+            priority: 10,
+          },
+        ],
+      },
+      { PROMPT_ROUTER_LOCAL_URL: "http://env:9/v1", PROMPT_ROUTER_LOCAL_MODEL: "envmodel" },
+    );
+    const local = chat(cfg, "local");
+    expect(local.baseUrl).toBe("http://env:9/v1");
+    expect(local.models).toEqual(["envmodel"]);
+  });
+
+  test("the local env overrides leave other chat backends alone", () => {
+    const cfg = resolveConfig(
+      {},
+      { PROMPT_ROUTER_LOCAL_URL: "http://env:9/v1", PROMPT_ROUTER_LOCAL_MODEL: "envmodel" },
+    );
+    expect(chat(cfg, "openrouter").baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(chat(cfg, "openrouter").models).not.toContain("envmodel");
   });
 });

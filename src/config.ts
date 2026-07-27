@@ -2,7 +2,7 @@ import { config as loadDotenv } from "dotenv";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { Backend, Category, ChatBackend, ExecBackend, Pricing } from "./types.js";
+import type { Backend, Category, ChatBackend, Pricing } from "./types.js";
 
 export interface RouterConfig {
   openrouter: {
@@ -349,6 +349,20 @@ export function resolveConfig(fileCfg: unknown, env: NodeJS.ProcessEnv): RouterC
   // Env overrides have already been folded into cfg.local, so deriving the
   // backends last means the local backend inherits them.
   cfg.backends = resolveBackends(file, cfg);
+
+  // ...but only along the legacy path, which is the one that reads cfg.local.
+  // A config that declares `backends` skips it, so the override has to be
+  // re-applied to the resolved backend directly — otherwise the two documented
+  // env vars would silently stop working the moment a config gained a
+  // `backends` array, which is what the setup wizard now writes for everyone.
+  const localBackend = cfg.backends.find(
+    (b): b is ChatBackend => b.kind === "chat" && b.id === "local",
+  );
+  if (localBackend) {
+    if (env.PROMPT_ROUTER_LOCAL_URL) localBackend.baseUrl = env.PROMPT_ROUTER_LOCAL_URL;
+    // Singular by nature: an override names one model, replacing the chain.
+    if (env.PROMPT_ROUTER_LOCAL_MODEL) localBackend.models = [env.PROMPT_ROUTER_LOCAL_MODEL];
+  }
 
   return cfg;
 }
