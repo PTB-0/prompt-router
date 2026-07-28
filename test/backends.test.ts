@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   findHandoffBackend,
+  findPricingReferenceBackend,
   remainingChatBackends,
   selectCandidates,
 } from "../src/backends.js";
@@ -144,5 +145,53 @@ describe("findHandoffBackend", () => {
 
   test("returns null when there is no exec backend at all", () => {
     expect(findHandoffBackend([chat({ id: "local" })])).toBeNull();
+  });
+});
+
+describe("findPricingReferenceBackend", () => {
+  const priced = { haiku: { inputPer1M: 1, outputPer1M: 5 } };
+
+  test("skips a higher-priority exec backend that declares no pricing", () => {
+    // The plan's headline use case: adding a coding agent is a config edit.
+    // Declaring `aider` above Claude Code must not zero the counterfactual —
+    // where a failure hands off and what the saving is priced against are
+    // two different questions.
+    const backends: Backend[] = [
+      exec({ id: "aider", priority: 20, modelPricing: {} }),
+      exec({ id: "claude", priority: 10, modelPricing: priced }),
+    ];
+    expect(findHandoffBackend(backends)?.id).toBe("aider");
+    expect(findPricingReferenceBackend(backends)?.id).toBe("claude");
+  });
+
+  test("prefers the highest-priority priced exec backend", () => {
+    const backends: Backend[] = [
+      exec({ id: "cheap", priority: 1, modelPricing: priced }),
+      exec({ id: "strong", priority: 10, modelPricing: priced }),
+    ];
+    expect(findPricingReferenceBackend(backends)?.id).toBe("strong");
+  });
+
+  test("ignores disabled and chat backends", () => {
+    const backends: Backend[] = [
+      chat({ id: "local" }),
+      exec({ id: "off", priority: 50, modelPricing: priced, enabled: false }),
+      exec({ id: "claude", priority: 10, modelPricing: priced }),
+    ];
+    expect(findPricingReferenceBackend(backends)?.id).toBe("claude");
+  });
+
+  test("falls back to the handoff backend when nothing declares pricing", () => {
+    // Keeps the old behaviour — savingsFor then yields zero, which is honest:
+    // there is no price to compare against.
+    const backends: Backend[] = [
+      exec({ id: "aider", priority: 20, modelPricing: {} }),
+      exec({ id: "codex", priority: 5, modelPricing: {} }),
+    ];
+    expect(findPricingReferenceBackend(backends)?.id).toBe("aider");
+  });
+
+  test("returns null when there is no exec backend at all", () => {
+    expect(findPricingReferenceBackend([chat({ id: "local" })])).toBeNull();
   });
 });

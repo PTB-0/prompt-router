@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { findPricingReferenceBackend } from "./backends.js";
 import type { Backend, Category, TokenUsage } from "./types.js";
 
 export interface BackendStats {
@@ -167,8 +168,16 @@ export function formatStats(stats: Stats, backends: readonly Backend[]): string 
   lines.push("");
   if (categories) lines.push(`  categories   ${categories}`);
   lines.push(`  diverted     ${diverted} of ${total} prompts`);
+  // The counterfactual is priced against whichever exec backend carries
+  // modelPricing, so the label names that backend rather than assuming Claude.
+  // With nothing priced, savings are structurally zero — say that, instead of
+  // asserting a comparison that was never made.
+  const reference = findPricingReferenceBackend(backends);
+  const priced = reference !== null && Object.keys(reference.modelPricing).length > 0;
   lines.push(
-    `  ≈ $${stats.saved.usd.toFixed(2)} saved vs. all-Claude    (actual spend: $${spend.toFixed(2)})`,
+    priced
+      ? `  ≈ $${stats.saved.usd.toFixed(2)} saved vs. all-${reference.label}    (actual spend: $${spend.toFixed(2)})`
+      : `  actual spend: $${spend.toFixed(2)}    (no priced agentic backend to compare against)`,
   );
   return lines.join("\n");
 }

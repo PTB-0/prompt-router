@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { formatStats, loadStats, recordDispatch } from "../src/stats.js";
-import type { Backend } from "../src/types.js";
+import type { Backend, ExecBackend } from "../src/types.js";
 
 let dir = "";
 
@@ -15,25 +15,29 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const backends: Backend[] = [
-  {
-    id: "claude",
-    label: "Claude Code",
-    kind: "exec",
-    categories: ["code"],
-    priority: 10,
-    enabled: true,
-    command: "claude",
-    args: ["{prompt}"],
-    modelFlag: "--model",
-    effortFlag: "--effort",
-    continueFlag: "-c",
-    supportsModelTier: true,
-    supportsPlan: true,
-    supportsContinue: true,
-    modelPricing: {},
+const claude: ExecBackend = {
+  id: "claude",
+  label: "Claude Code",
+  kind: "exec",
+  categories: ["code"],
+  priority: 10,
+  enabled: true,
+  command: "claude",
+  args: ["{prompt}"],
+  modelFlag: "--model",
+  effortFlag: "--effort",
+  continueFlag: "-c",
+  supportsModelTier: true,
+  supportsPlan: true,
+  supportsContinue: true,
+  modelPricing: {
+    haiku: { inputPer1M: 1, outputPer1M: 5 },
+    sonnet: { inputPer1M: 3, outputPer1M: 15 },
+    opus: { inputPer1M: 5, outputPer1M: 25 },
   },
-];
+};
+
+const backends: Backend[] = [claude];
 
 describe("stats v2", () => {
   test("a missing file starts from an empty v2 record", () => {
@@ -105,6 +109,44 @@ describe("stats v2", () => {
     expect(output).toContain("claude");
     expect(output).toContain("saved");
     expect(output).not.toContain("undefined");
+  });
+
+  test("the savings comparison is labelled with the backend it was priced against", () => {
+    // "all-Claude" was hardcoded. The counterfactual is priced against
+    // whichever exec backend actually carries modelPricing, so the label has
+    // to name that backend or the headline number claims a comparison it
+    // never made.
+    recordDispatch(dir, {
+      backendId: "local",
+      category: "simple-qa",
+      usage: { inputTokens: 100, outputTokens: 200, estimated: false },
+      spend: 0,
+      savedTokens: 300,
+      savedUsd: 1.25,
+    });
+    const renamed: Backend[] = [{ ...claude, id: "agent", label: "Some Agent" }];
+    const output = formatStats(loadStats(dir), renamed);
+    expect(output).toContain("$1.25 saved vs. all-Some Agent");
+    expect(output).not.toContain("all-Claude");
+  });
+
+  test("with no priced exec backend, the savings line says so instead of claiming a comparison", () => {
+    // A registry whose only agent declares no modelPricing can never
+    // accumulate savings. Printing "$0.00 saved vs. all-Claude" there would
+    // assert a comparison against a backend that isn't even configured.
+    recordDispatch(dir, {
+      backendId: "local",
+      category: "simple-qa",
+      usage: { inputTokens: 100, outputTokens: 200, estimated: false },
+      spend: 0.4,
+      savedTokens: 0,
+      savedUsd: 0,
+    });
+    const unpriced: Backend[] = [{ ...claude, modelPricing: {} }];
+    const output = formatStats(loadStats(dir), unpriced);
+    expect(output).not.toContain("saved vs.");
+    expect(output).toContain("actual spend: $0.40");
+    expect(output).toContain("no priced agentic backend");
   });
 
   test("formatStats renders an exec backend's tokens as input-only, never a combined total", () => {

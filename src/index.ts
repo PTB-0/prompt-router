@@ -5,7 +5,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import pc from "picocolors";
-import { findHandoffBackend, remainingChatBackends, selectCandidates } from "./backends.js";
+import {
+  findHandoffBackend,
+  findPricingReferenceBackend,
+  remainingChatBackends,
+  selectCandidates,
+} from "./backends.js";
 import { classify } from "./classify.js";
 import { configDir, loadConfig, type RouterConfig } from "./config.js";
 import { estimateUsage, savingsFor } from "./cost.js";
@@ -308,6 +313,10 @@ async function runChatRoute(
   ];
   const timeoutMs = Math.max(config.timeoutMs, ANSWER_TIMEOUT_FLOOR_MS);
   const handoff = findHandoffBackend(config.backends);
+  // Not the same backend as the hand-off target in general: the counterfactual
+  // has to be priced against something that declares modelPricing, or adding a
+  // higher-priority agent without prices zeroes the savings figure silently.
+  const reference = findPricingReferenceBackend(config.backends);
 
   const chatCandidates = candidates.filter((b): b is ChatBackend => b.kind === "chat");
   // The category's candidates first, then every other enabled chat backend as
@@ -351,10 +360,10 @@ async function runChatRoute(
 
     // The tier this prompt would have used decides the reference price, so a
     // trivial question is not valued at the top tier.
-    const tier = handoff
-      ? tierFor(handoff, cls, prompt, config, decision.uncertain)
+    const tier = reference
+      ? tierFor(reference, cls, prompt, config, decision.uncertain)
       : null;
-    const { savedTokens, savedUsd } = savingsFor(attempt.usage, handoff, tier);
+    const { savedTokens, savedUsd } = savingsFor(attempt.usage, reference, tier);
     recordDispatch(dir, {
       backendId: backend.id,
       category: decision.category,

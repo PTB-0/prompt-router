@@ -511,6 +511,52 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
   );
 
   test(
+    "the counterfactual is priced against the priced agent, not the top-priority one",
+    async () => {
+      // Declaring a second coding agent above Claude Code is the plan's
+      // headline "config edit, not a release" use case. It changes where a
+      // failure hands off — but the counterfactual must still be priced
+      // against a backend that actually has modelPricing, or the headline
+      // savings number silently stays at zero forever.
+      const { server, port } = await startStubServer();
+      try {
+        const dir = makeTmpDir();
+        writeConfig(dir, {
+          backends: [
+            chatBackendConfig({
+              id: "livechat",
+              priority: 10,
+              baseUrl: `http://127.0.0.1:${port}`,
+            }),
+            execBackendConfig({ id: "aider", label: "Aider", priority: 20 }),
+            execBackendConfig({
+              id: "claude",
+              label: "Claude Code",
+              priority: 10,
+              supportsModelTier: true,
+              modelPricing: {
+                haiku: { inputPer1M: 1, outputPer1M: 5 },
+                sonnet: { inputPer1M: 3, outputPer1M: 15 },
+                opus: { inputPer1M: 5, outputPer1M: 25 },
+              },
+            }),
+          ],
+        });
+        const result = await runCli(dir, ["what year is it currently"]);
+        expect(result.status).toBe(0);
+
+        const stats = readStats(dir);
+        // The stub reports 11 prompt + 3 completion tokens.
+        expect(stats.saved.tokens).toBe(14);
+        expect(stats.saved.usd).toBeGreaterThan(0);
+      } finally {
+        server.close();
+      }
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
     "stats record the backend that actually served, not the head candidate",
     async () => {
       const { server, port } = await startStubServer();
