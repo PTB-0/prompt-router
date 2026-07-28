@@ -16,7 +16,9 @@ function resolveCategory(
 
   // Among weak signals, a code verdict from either side wins: misrouting a
   // code task to a small chat model is far worse than over-serving a question.
-  if (heuristic === "code" || cls?.category === "code") return "code";
+  // Only the heuristic needs saying — an unsure code classification reaches
+  // the same answer through the line below.
+  if (heuristic === "code") return "code";
 
   if (cls) return cls.category;
   return heuristic ?? "deep-qa"; // heuristic is non-null here; ?? satisfies the type system

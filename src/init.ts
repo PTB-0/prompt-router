@@ -57,7 +57,7 @@ export interface InitAnswers {
  */
 export function buildInitConfig(
   answers: InitAnswers,
-  existing: Backend[] = defaultBackends(),
+  existing: Backend[],
 ): { backends: Backend[] } {
   const wantsLocal = Boolean(answers.localBaseUrl && answers.localModel);
   const backends = structuredClone(existing);

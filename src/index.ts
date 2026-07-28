@@ -237,7 +237,6 @@ function tierFor(
 
 function resolveDispatch(
   backend: Backend,
-  fallbacks: Backend[],
   decision: CategoryDecision,
   cls: Classification | null,
   prompt: string,
@@ -249,7 +248,6 @@ function resolveDispatch(
     decision.planFirst && backend.kind === "exec" && backend.supportsPlan;
   return {
     backend,
-    fallbacks,
     planFirst,
     uncertain: decision.uncertain,
     model: args.forceModel ?? tier?.model,
@@ -398,7 +396,6 @@ async function runChatRoute(
   // weak backends, and a hand-off already lands on the strongest one.
   const handoffDispatch = resolveDispatch(
     handoff,
-    [],
     { category: decision.category, planFirst: false, uncertain: false },
     cls,
     prompt,
@@ -503,7 +500,6 @@ async function main(): Promise<void> {
 
   let dispatch = resolveDispatch(
     head,
-    candidates.slice(1),
     decision,
     cls,
     args.prompt,
@@ -529,7 +525,6 @@ async function main(): Promise<void> {
       head = chosen;
       dispatch = resolveDispatch(
         chosen,
-        candidates.slice(1),
         decision,
         cls,
         args.prompt,

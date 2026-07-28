@@ -78,10 +78,10 @@ export interface CategoryDecision {
   uncertain: boolean;
 }
 
-/** A resolved decision: which backend runs, and what follows it if it fails. */
+/** A resolved decision: which backend runs, and how. The chain that follows it
+ *  travels separately, as the candidate list the caller already holds. */
 export interface Dispatch {
   backend: Backend;
-  fallbacks: Backend[];
   planFirst: boolean;
   uncertain: boolean;
   model?: string;
