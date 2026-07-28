@@ -1,3 +1,8 @@
+> **SUPERSEDED by `HANDOVER-2026-07-28-backend-registry.md`.** Kept for history only.
+> Everything still live is repeated there. Do not work from this file: Task 11 and
+> Task 12 are both finished now, and this file's diagnosis of the failing test is
+> only half right — the recommended remedy was already in the tree and did not work.
+
 # Handover — Backend Registry & Cost Accounting
 
 **Written:** 2026-07-27
