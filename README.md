@@ -122,7 +122,7 @@ prompt-router -c "and which one scales better?"   # follow-up: carries conversat
 prompt-router --to local "explain this simply"    # force a backend — any enabled configured id
 prompt-router --model opus --effort high "..."    # force Claude Code's model/effort for one run
 prompt-router --no-route "quick edit"             # skip everything, straight to the agentic backend
-prompt-router --stats                             # how much Claude usage you've saved
+prompt-router --stats                             # per-backend spend, and what the routing saved
 prompt-router --clear-session                     # forget the stored conversation
 ```
 
@@ -136,7 +136,7 @@ Every routed prompt shows the confirmation bar first:
 | `1` / `2` / `3` | Override the route: the first three candidates for this category, in the order the bar lists them |
 | `c` / `l` / `o` | Legacy aliases, hardwired to the backend ids `claude` / `local` / `openrouter` — kept for muscle memory, no longer shown, and a no-op if you rename or remove those backends |
 
-Only the numeric keys are advertised, because which backends are offered depends on the category and on your registry: a code prompt with the default config has one candidate (`[1] Claude Code`), a question has two.
+Only the numeric keys are advertised, because which backends are offered depends on the category and on your registry: with the default config a code prompt has one candidate (`[1] Claude Code`) and a simple question has two, since only OpenRouter declares `deep-qa`.
 
 ## The plan-first pipeline
 
@@ -278,7 +278,7 @@ prompt-router assumes things fail and never leaves you stranded:
 |---|---|
 | The classifier is down or you have no API key | Routes by the built-in heuristics: code tasks still go to Claude Code (with an estimated model/effort tier), everything else goes to the chat backends |
 | The local server is down and can't be started | Falls back to OpenRouter |
-| There's no API key either | Tries every enabled chat backend — the local server included, even when the category it declares isn't the one that got picked — and only then hands off to Claude Code as a last resort |
+| Every backend the category offers has failed | Sweeps the remaining enabled chat backends — the local server included, even when the category it declares isn't the one that got picked — and only then hands off to Claude Code as a last resort. This is what keeps a no-API-key run on the local model instead of the paid agent |
 | A free model is rate-limited or stalls mid-stream | Retries with the next model in the chain (a silent stream is cut after `timeoutMs` of inactivity) |
 | Every answer backend fails | Hands off to Claude Code |
 | Claude Code itself isn't installed | Prints your prompt so it's never lost |
