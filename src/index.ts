@@ -56,7 +56,7 @@ const USAGE = `Usage: prompt-router "your prompt"
       --to <backend>   force a backend by id (claude | local | openrouter | ...)
       --model <name>   force the Claude Code model for this run (e.g. opus, sonnet, haiku)
       --effort <level> force the Claude Code effort for this run: low | medium | high | xhigh | max
-      --no-route       skip optimization and routing, go straight to Claude Code
+      --no-route       skip optimization and routing, go straight to the agentic backend
       --stats          show routing statistics
       --clear-session  forget the stored conversation
 `;

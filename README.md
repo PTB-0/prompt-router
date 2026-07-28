@@ -29,7 +29,7 @@ $ prompt-router "fix the login bug in auth.ts"
   (code, complexity 0.4, confidence 0.9)
 
   ────────────────────────────────────────────────────────
-  [Y]es  [n]o, original  [e]dit  [c]laude  [l]ocal  [o]penrouter  (15s timeout → Y):
+  [Y]es  [n]o, original  [e]dit  [1] Claude Code  (15s timeout → Y):
 ```
 
 ---
@@ -119,9 +119,9 @@ prompt-router "what's the difference between TCP and UDP?"    # → local model
 prompt-router "compare event sourcing with CRUD for a bank"   # → OpenRouter
 
 prompt-router -c "and which one scales better?"   # follow-up: carries conversation memory
-prompt-router --to local "explain this simply"    # force a backend — any configured id
+prompt-router --to local "explain this simply"    # force a backend — any enabled configured id
 prompt-router --model opus --effort high "..."    # force Claude Code's model/effort for one run
-prompt-router --no-route "quick edit"             # skip everything, straight to Claude Code
+prompt-router --no-route "quick edit"             # skip everything, straight to the agentic backend
 prompt-router --stats                             # how much Claude usage you've saved
 prompt-router --clear-session                     # forget the stored conversation
 ```
@@ -133,7 +133,10 @@ Every routed prompt shows the confirmation bar first:
 | `Y` / Enter / timeout | Accept the optimized prompt and the chosen route |
 | `n` | Keep your original wording (same route) |
 | `e` | Edit the optimized prompt in `$EDITOR` |
-| `c` / `l` / `o` | Override the route: **c**laude, **l**ocal, **o**penrouter |
+| `1` / `2` / `3` | Override the route: the first three candidates for this category, in the order the bar lists them |
+| `c` / `l` / `o` | Legacy aliases, hardwired to the backend ids `claude` / `local` / `openrouter` — kept for muscle memory, no longer shown, and a no-op if you rename or remove those backends |
+
+Only the numeric keys are advertised, because which backends are offered depends on the category and on your registry: a code prompt with the default config has one candidate (`[1] Claude Code`), a question has two.
 
 ## The plan-first pipeline
 
@@ -180,7 +183,7 @@ Any OpenAI-compatible server works — LM Studio, Ollama, llama.cpp, vLLM:
 
 ## Configuration
 
-Everything lives in `~/.config/prompt-router/` (override the directory with `PROMPT_ROUTER_DIR`). All fields are optional — these are the defaults:
+Everything lives in `~/.config/prompt-router/` (override the directory with `PROMPT_ROUTER_DIR`). Every field is optional and falls back to its built-in default. The block below shows the defaults worth editing rather than every key a backend accepts — `defaultBackends()` in `src/config.ts` is the exhaustive list:
 
 ```jsonc
 // ~/.config/prompt-router/config.json
@@ -251,6 +254,14 @@ than a release. **A config without a `backends` key keeps working** — the thre
 defaults above are derived from the older `local` / `openrouter.answerModels`
 blocks, so nothing needs migrating by hand.
 
+Setting `"enabled": false` takes a backend out of routing entirely — `--to` on it
+is refused rather than silently overriding the setting. And an exec backend's
+`modelPricing` (not shown above; the `claude` default carries reference prices for
+`haiku`, `sonnet` and `opus`) is what `--stats` prices its counterfactual against:
+the highest-priority enabled exec backend that declares any. Give a coding agent
+you add its own `modelPricing` if you want it to be the yardstick — otherwise
+`--stats` reports your actual spend and says there is nothing to compare it to.
+
 | Environment variable | Overrides |
 |---|---|
 | `OPENROUTER_API_KEY` | API key (required for classification, deep answers, plans) |
@@ -267,7 +278,7 @@ prompt-router assumes things fail and never leaves you stranded:
 |---|---|
 | The classifier is down or you have no API key | Routes by the built-in heuristics: code tasks still go to Claude Code (with an estimated model/effort tier), everything else goes to the chat backends |
 | The local server is down and can't be started | Falls back to OpenRouter |
-| There's no API key either | Tries the local server, and only then hands off to Claude Code as a last resort |
+| There's no API key either | Tries every enabled chat backend — the local server included, even when the category it declares isn't the one that got picked — and only then hands off to Claude Code as a last resort |
 | A free model is rate-limited or stalls mid-stream | Retries with the next model in the chain (a silent stream is cut after `timeoutMs` of inactivity) |
 | Every answer backend fails | Hands off to Claude Code |
 | Claude Code itself isn't installed | Prints your prompt so it's never lost |
