@@ -1,6 +1,6 @@
 {
   "name": "prompt-router",
-  "version": "3.0.0",
+  "version": "3.0.1-beta.0",
   "description": "Route your prompts to the right AI: coding tasks to Claude Code, simple questions to your local model, deep questions to OpenRouter — with prompt optimization built in.",
   "type": "module",
   "bin": {
