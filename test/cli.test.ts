@@ -209,11 +209,18 @@ function chatBackendConfig(overrides: Record<string, unknown> = {}): Record<stri
   };
 }
 
-/** A minimal OpenAI-compatible /chat/completions stub, SSE with usage. */
+/**
+ * A minimal OpenAI-compatible stub: `/chat/completions` streams SSE with a
+ * usage frame, and `/models` answers the health probe (src/local.ts's
+ * isServerUp) so a `probe: true` backend can be exercised for real.
+ */
 function startStubServer(): Promise<{ server: http.Server; port: number }> {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
-      if (req.method === "POST" && req.url === "/chat/completions") {
+      if (req.method === "GET" && req.url === "/models") {
+        res.writeHead(200, { "Content-Type": "application/json", Connection: "close" });
+        res.end('{"data":[]}');
+      } else if (req.method === "POST" && req.url === "/chat/completions") {
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
           // Force the socket closed so the CLI subprocess isn't held open by
@@ -409,6 +416,96 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
       expect(stats.backends["handoffexec"]).toBeDefined();
       expect(stats.backends["handoffexec"]?.count).toBe(1);
       expect(stats.backends["deadchat"]).toBeUndefined();
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "with no API key, an enabled chat backend outside the category is tried before the exec handoff",
+    async () => {
+      // README's degradation table: "There's no API key either → tries the
+      // local server, and only then hands off to Claude Code as a last
+      // resort." The default `local` backend serves only "simple-qa", and
+      // with no API key every unclaimed prompt lands in decideRoute's
+      // no-signal branch — "deep-qa" — whose only candidate is the keyless
+      // remote provider. Without a last-resort sweep of the remaining enabled
+      // chat backends, the local server is never contacted at all and the
+      // paid agent gets every question.
+      const { server, port } = await startStubServer();
+      try {
+        const dir = makeTmpDir();
+        writeConfig(dir, {
+          backends: [
+            chatBackendConfig({
+              id: "localstub",
+              label: "local model",
+              categories: ["simple-qa"],
+              priority: 10,
+              baseUrl: `http://127.0.0.1:${port}`,
+              probe: true,
+            }),
+            chatBackendConfig({
+              id: "keyedchat",
+              label: "Keyed Chat",
+              categories: ["simple-qa", "deep-qa"],
+              priority: 5,
+              apiKeyEnv: "OPENROUTER_API_KEY",
+            }),
+            execBackendConfig({
+              id: "handoffexec",
+              label: "Handoff Exec",
+              categories: ["code"],
+              priority: 5,
+            }),
+          ],
+        });
+        // No "?" — decideRoute's no-signal branch resolves this to "deep-qa",
+        // which localstub does not serve.
+        const prompt = "what year is it currently";
+        const result = await runCli(dir, [prompt]);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("hello");
+        // The skip reason for the backend that was a candidate survives.
+        expect(result.stderr).toMatch(/no OPENROUTER_API_KEY/);
+        expect(result.stderr).not.toMatch(/handing off to/);
+
+        const stats = readStats(dir);
+        expect(stats.backends["localstub"]?.count).toBe(1);
+        expect(stats.backends["handoffexec"]).toBeUndefined();
+      } finally {
+        server.close();
+      }
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "a chat backend skipped for a missing key is not retried by the last-resort sweep",
+    async () => {
+      // The sweep exists for backends that were never candidates. Retrying one
+      // that was already skipped for a missing API key would fail identically
+      // and only duplicate the message.
+      const dir = makeTmpDir();
+      writeConfig(dir, {
+        backends: [
+          chatBackendConfig({
+            id: "keyedchat",
+            label: "Keyed Chat",
+            categories: ["simple-qa", "deep-qa"],
+            priority: 5,
+            apiKeyEnv: "OPENROUTER_API_KEY",
+          }),
+          execBackendConfig({
+            id: "handoffexec",
+            label: "Handoff Exec",
+            categories: ["code"],
+            priority: 5,
+          }),
+        ],
+      });
+      const result = await runCli(dir, ["what year is it currently"]);
+      expect(result.stderr.match(/no OPENROUTER_API_KEY/g)?.length).toBe(1);
+      expect(result.stderr).toMatch(/handing off to Handoff Exec/);
     },
     CLI_TIMEOUT_MS,
   );

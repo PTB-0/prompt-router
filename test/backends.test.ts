@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { findHandoffBackend, selectCandidates } from "../src/backends.js";
+import {
+  findHandoffBackend,
+  remainingChatBackends,
+  selectCandidates,
+} from "../src/backends.js";
 import type { Backend, ChatBackend, ExecBackend } from "../src/types.js";
 
 function chat(over: Partial<ChatBackend> & { id: string }): ChatBackend {
@@ -79,6 +83,47 @@ describe("selectCandidates", () => {
 
   test("no candidate yields an empty list", () => {
     expect(selectCandidates("code", [chat({ id: "a" })])).toEqual([]);
+  });
+});
+
+describe("remainingChatBackends", () => {
+  test("returns enabled chat backends outside the tried set, by descending priority", () => {
+    const backends: Backend[] = [
+      chat({ id: "low", priority: 1 }),
+      chat({ id: "high", priority: 10 }),
+      chat({ id: "tried", priority: 20 }),
+    ];
+    expect(remainingChatBackends(backends, new Set(["tried"])).map((b) => b.id)).toEqual([
+      "high",
+      "low",
+    ]);
+  });
+
+  test("ignores the category entirely — that is the point of the sweep", () => {
+    // The local backend only declares "simple-qa"; a keyless run resolves
+    // every unclaimed prompt to "deep-qa". It must still be reachable.
+    const backends: Backend[] = [chat({ id: "local", categories: ["simple-qa"] })];
+    expect(remainingChatBackends(backends, new Set()).map((b) => b.id)).toEqual(["local"]);
+  });
+
+  test("skips disabled chat backends and every exec backend", () => {
+    const backends: Backend[] = [
+      chat({ id: "off", enabled: false }),
+      exec({ id: "claude", priority: 10 }),
+      chat({ id: "on" }),
+    ];
+    expect(remainingChatBackends(backends, new Set()).map((b) => b.id)).toEqual(["on"]);
+  });
+
+  test("equal priorities keep config order", () => {
+    const backends: Backend[] = [
+      chat({ id: "first", priority: 5 }),
+      chat({ id: "second", priority: 5 }),
+    ];
+    expect(remainingChatBackends(backends, new Set()).map((b) => b.id)).toEqual([
+      "first",
+      "second",
+    ]);
   });
 });
 

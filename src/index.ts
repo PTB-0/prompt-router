@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import pc from "picocolors";
-import { findHandoffBackend, selectCandidates } from "./backends.js";
+import { findHandoffBackend, remainingChatBackends, selectCandidates } from "./backends.js";
 import { classify } from "./classify.js";
 import { configDir, loadConfig, type RouterConfig } from "./config.js";
 import { estimateUsage, savingsFor } from "./cost.js";
@@ -310,7 +310,16 @@ async function runChatRoute(
   const handoff = findHandoffBackend(config.backends);
 
   const chatCandidates = candidates.filter((b): b is ChatBackend => b.kind === "chat");
-  for (const backend of chatCandidates) {
+  // The category's candidates first, then every other enabled chat backend as
+  // a last resort. Handing a question to the paid agent because no chat
+  // backend happened to declare its category inverts the whole point of the
+  // router; anything already tried above is excluded, including one skipped
+  // for a missing key — that would fail identically.
+  const attempts = [
+    ...chatCandidates,
+    ...remainingChatBackends(config.backends, new Set(chatCandidates.map((b) => b.id))),
+  ];
+  for (const backend of attempts) {
     const apiKey = backend.apiKeyEnv ? process.env[backend.apiKeyEnv] : undefined;
     if (backend.apiKeyEnv && !apiKey) {
       showPassThrough(`${backend.label}: no ${backend.apiKeyEnv} — trying the next backend`);
