@@ -475,6 +475,18 @@ async function main(): Promise<void> {
       process.stderr.write(`prompt-router: unknown backend "${args.forceBackendId}" (have: ${ids})\n`);
       process.exit(1);
     }
+    // selectCandidates already drops disabled backends, but --to bypasses it
+    // entirely — and for a chat backend the only other `enabled` check lives
+    // inside ensureChatBackend, which is skipped for every remote provider
+    // (probe: false). Forcing a backend the user turned off would dispatch for
+    // real and bill them for it.
+    if (!forced.enabled) {
+      process.stderr.write(
+        `prompt-router: backend "${forced.id}" is disabled — ` +
+          `set "enabled": true for it in ${path.join(dir, "config.json")}\n`,
+      );
+      process.exit(1);
+    }
     candidates = [forced, ...candidates.filter((b) => b.id !== forced.id)];
   }
 

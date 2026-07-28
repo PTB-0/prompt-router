@@ -272,6 +272,58 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
   );
 
   test(
+    "--to refuses a disabled exec backend instead of spawning it",
+    async () => {
+      // `enabled: false` was only ever honoured by selectCandidates and (for
+      // chat) ensureChatBackend. --to looked the id up in config.backends
+      // directly, so a backend the user explicitly turned off still ran.
+      const dir = makeTmpDir();
+      writeConfig(dir, { backends: [execBackendConfig({ enabled: false })] });
+      const result = await runCli(dir, ["--to", "brokenexec", "please refactor the auth module"]);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/backend "brokenexec" is disabled/);
+      expect(result.stderr).toMatch(/"enabled": true/);
+      // Not merely a different error path: the spawn never happened, so
+      // nothing was recorded against it either.
+      expect(result.stderr).not.toMatch(/failed to run/);
+      expect(fs.existsSync(path.join(dir, "stats.json"))).toBe(false);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--to refuses a disabled chat backend instead of billing for it",
+    async () => {
+      // The worse half: every remote provider sets `probe: false`, and the
+      // only `enabled` check on the chat path lived inside ensureChatBackend,
+      // which runs only when `probe` is true. So --to on a disabled remote
+      // provider dispatched for real and billed the user.
+      const { server, port } = await startStubServer();
+      try {
+        const dir = makeTmpDir();
+        writeConfig(dir, {
+          backends: [
+            chatBackendConfig({
+              id: "paidchat",
+              label: "Paid Chat",
+              enabled: false,
+              baseUrl: `http://127.0.0.1:${port}`,
+            }),
+          ],
+        });
+        const result = await runCli(dir, ["--to", "paidchat", "what year is it currently"]);
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/backend "paidchat" is disabled/);
+        expect(result.stdout).not.toContain("hello");
+        expect(fs.existsSync(path.join(dir, "stats.json"))).toBe(false);
+      } finally {
+        server.close();
+      }
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
     "a missing exec command prints the prompt so it is not lost",
     async () => {
       // On win32, src/dispatch.ts's execSpawnPlan always shells through
