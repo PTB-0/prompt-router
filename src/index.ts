@@ -190,16 +190,29 @@ function runExec(
   process.exit(result.status ?? 1);
 }
 
+/**
+ * $EDITOR conventionally carries flags too (`code --wait`, `vim -u NONE`), so
+ * treating the whole value as one executable name — as spawnSync would if
+ * handed it directly — fails with ENOENT the moment it contains a space.
+ */
+function parseEditorCommand(spec: string): { command: string; args: string[] } {
+  const parts = spec.trim().split(/\s+/).filter(Boolean);
+  const command = parts[0] ?? spec;
+  return { command, args: parts.slice(1) };
+}
+
 function openInEditor(content: string): string {
   const tmpFile = path.join(os.tmpdir(), `prompt-router-${Date.now()}.txt`);
   fs.writeFileSync(tmpFile, content, "utf8");
 
-  const editor = process.env.EDITOR ?? (process.platform === "win32" ? "notepad" : "vi");
+  const editorSpec = process.env.EDITOR ?? (process.platform === "win32" ? "notepad" : "vi");
+  const { command: editor, args: editorArgs } = parseEditorCommand(editorSpec);
   const useShell = process.platform === "win32";
-  spawnSync(editor, toShellArgs([tmpFile], useShell, useShell && isBatchShim(editor)), {
-    stdio: "inherit",
-    shell: useShell,
-  });
+  spawnSync(
+    editor,
+    toShellArgs([...editorArgs, tmpFile], useShell, useShell && isBatchShim(editor)),
+    { stdio: "inherit", shell: useShell },
+  );
 
   const edited = fs.readFileSync(tmpFile, "utf8").trim();
   fs.unlinkSync(tmpFile);
