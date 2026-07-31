@@ -319,3 +319,7 @@ Built test-first: every routing rule in `src/route.ts` and every heuristic in `s
 ## License
 
 [MIT](LICENSE) © 2026 Ege
+
+
+
+<!-- gonna relase v4 soon. it will be fire !!! -->
