@@ -10,10 +10,18 @@ export interface ExecArgContext {
 /**
  * Expands a backend's argument template. A placeholder with nothing to say
  * expands to zero arguments, so an unset model never leaves a dangling flag.
+ *
+ * `template` defaults to the backend's interactive `args`; orchestra mode's
+ * review/fix loop passes `printArgs` instead to build the non-interactive
+ * invocation, reusing the same token expansion.
  */
-export function buildExecArgs(backend: ExecBackend, ctx: ExecArgContext): string[] {
+export function buildExecArgs(
+  backend: ExecBackend,
+  ctx: ExecArgContext,
+  template: string[] = backend.args,
+): string[] {
   const out: string[] = [];
-  for (const token of backend.args) {
+  for (const token of template) {
     switch (token) {
       case "{prompt}":
         out.push(ctx.prompt);

@@ -66,6 +66,17 @@ export interface ExecBackend extends BackendBase {
   supportsContinue: boolean;
   /** Reference prices per model name, used for the counterfactual figure. */
   modelPricing: Record<string, Pricing>;
+  /** Free-text description of what this agent is good at — the only input
+   *  orchestra mode's agent-selection LLM call gets about this backend. */
+  strengths?: string;
+  /**
+   * Same token expansion as `args`, but for a non-interactive invocation
+   * whose stdout is captured instead of handed to the terminal. Orchestra
+   * mode's review/fix loop needs a parseable verdict back, which the
+   * interactive `args` template's terminal takeover can't provide — a
+   * backend missing this is simply never picked as reviewer/fixer.
+   */
+  printArgs?: string[];
 }
 
 export type Backend = ChatBackend | ExecBackend;

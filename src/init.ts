@@ -203,6 +203,32 @@ export async function runInit(): Promise<void> {
   const routingLog = await askBoolean(prompter, "Enable content-free routing log", existing.logging.routingLog);
   const timeoutMs = await askNumber(prompter, "Request timeout (ms)", existing.timeoutMs);
 
+  const orchestraEnabled = await askBoolean(
+    prompter,
+    "Enable orchestra mode (agent selection + automatic review/fix loop)",
+    existing.orchestra.enabled,
+  );
+  let orchestraComplexity = existing.orchestra.complexityThreshold;
+  let orchestraMaxFixRounds = existing.orchestra.maxFixRounds;
+  let orchestraDecompose = existing.orchestra.decompose;
+  if (orchestraEnabled) {
+    orchestraComplexity = await askNumber(
+      prompter,
+      "Orchestra complexity threshold (0-1)",
+      existing.orchestra.complexityThreshold,
+    );
+    orchestraMaxFixRounds = await askNumber(
+      prompter,
+      "Orchestra max fix rounds",
+      existing.orchestra.maxFixRounds,
+    );
+    orchestraDecompose = await askBoolean(
+      prompter,
+      "Split tasks across multiple agents when possible (vs. one agent per task)",
+      existing.orchestra.decompose,
+    );
+  }
+
   if (!prompter.closed) rl.close();
 
   // The written file carries `backends` and no legacy `local` / `answerModels`
@@ -221,6 +247,12 @@ export async function runInit(): Promise<void> {
     },
     ...buildInitConfig(answers, existing.backends),
     modelSelection: { enabled: existing.modelSelection.enabled },
+    orchestra: {
+      enabled: orchestraEnabled,
+      complexityThreshold: orchestraComplexity,
+      maxFixRounds: orchestraMaxFixRounds,
+      decompose: orchestraDecompose,
+    },
     thresholds: { confidence, planComplexity, modelTierLow: existing.thresholds.modelTierLow, modelTierHigh: existing.thresholds.modelTierHigh },
     session: { maxMessages },
     logging: { routingLog },

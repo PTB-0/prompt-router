@@ -210,6 +210,30 @@ function chatBackendConfig(overrides: Record<string, unknown> = {}): Record<stri
 }
 
 /**
+ * A tiny OS-appropriate script that appends `letter` to `marker.txt` (created
+ * fresh, relative to the CLI's cwd) and exits 0. Deliberately not
+ * `process.execPath` run as an exec backend "command": that path can contain
+ * spaces (e.g. "C:\Program Files\nodejs\node.exe"), and — like the sentinel
+ * `.cmd` fixture above — a real backend command has to actually resolve and
+ * run, not just be syntactically plausible. Returns the `{command, args}` an
+ * execBackendConfig() override plugs in directly.
+ */
+function writeAgentScript(dir: string, name: string, letter: string): { command: string; args: string[] } {
+  if (process.platform === "win32") {
+    fs.writeFileSync(
+      path.join(dir, `${name}.cmd`),
+      `@echo off\r\necho ${letter}>>marker.txt\r\nexit /b 0\r\n`,
+      "utf8",
+    );
+    return { command: name, args: [] };
+  }
+  const scriptPath = path.join(dir, `${name}.sh`);
+  fs.writeFileSync(scriptPath, `#!/bin/sh\necho ${letter} >> marker.txt\n`, "utf8");
+  fs.chmodSync(scriptPath, 0o755);
+  return { command: `./${name}.sh`, args: [] };
+}
+
+/**
  * A minimal OpenAI-compatible stub: `/chat/completions` streams SSE with a
  * usage frame, and `/models` answers the health probe (src/local.ts's
  * isServerUp) so a `probe: true` backend can be exercised for real.
@@ -233,6 +257,39 @@ function startStubServer(): Promise<{ server: http.Server; port: number }> {
         );
         res.write("data: [DONE]\n\n");
         res.end();
+      } else {
+        res.writeHead(404).end();
+      }
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address() as AddressInfo;
+      resolve({ server, port: address.port });
+    });
+  });
+}
+
+/**
+ * A non-streaming `/chat/completions` stub — the shape `chatCompletion`
+ * (classify, plan, and orchestra's selectAgent/decomposeTask) expects, unlike
+ * startStubServer's SSE shape which only `streamChat`/`dispatchChat` read.
+ * Always answers with the same fixed `content`, regardless of which of those
+ * callers is asking — good enough here since the test only cares that
+ * decomposeTask's JSON-shaped response is the one that parses successfully.
+ */
+function startNonStreamingStub(content: string): Promise<{ server: http.Server; port: number }> {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/chat/completions") {
+        req.on("data", () => {});
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json", Connection: "close" });
+          res.end(
+            JSON.stringify({
+              choices: [{ message: { content } }],
+              usage: { prompt_tokens: 10, completion_tokens: 5 },
+            }),
+          );
+        });
       } else {
         res.writeHead(404).end();
       }
@@ -433,6 +490,157 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
       expect(entry?.outTok).toBe(0);
       expect(entry?.spend).toBe(0);
       expect(stats.saved).toEqual({ tokens: 0, usd: 0 });
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--orchestra forces the orchestra route: the selected exec backend still runs, and a missing command is reported the same way",
+    async () => {
+      const dir = makeTmpDir();
+      writeConfig(dir, { backends: [execBackendConfig()] });
+      const prompt = "please refactor the auth module for clarity";
+      const result = await runCli(dir, ["--orchestra", prompt]);
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain(prompt);
+      expect(result.stderr).toMatch(/failed to run/);
+      expect(result.stderr).toMatch(/orchestra: Broken Exec takes this task/);
+
+      const stats = readStats(dir);
+      expect(stats.backends["brokenexec"]?.count).toBe(1);
+      expect(stats.backends["brokenexec"]?.spend).toBe(0);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--no-orchestra suppresses orchestra mode even when --orchestra is also passed",
+    async () => {
+      const dir = makeTmpDir();
+      writeConfig(dir, { backends: [execBackendConfig()] });
+      const prompt = "please refactor the auth module for clarity";
+      const result = await runCli(dir, ["--orchestra", "--no-orchestra", prompt]);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).not.toMatch(/orchestra:/);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--to bypasses orchestra mode even with --orchestra passed, since an explicit backend choice shouldn't be second-guessed",
+    async () => {
+      const dir = makeTmpDir();
+      writeConfig(dir, { backends: [execBackendConfig()] });
+      const prompt = "please refactor the auth module for clarity";
+      const result = await runCli(dir, ["--orchestra", "--to", "brokenexec", prompt]);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).not.toMatch(/orchestra:/);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--showdebug prints orchestra's agent-selection reasoning",
+    async () => {
+      const dir = makeTmpDir();
+      writeConfig(dir, { backends: [execBackendConfig()] });
+      const prompt = "please refactor the auth module for clarity";
+      const result = await runCli(dir, ["--orchestra", "--showdebug", prompt]);
+      // The command doesn't exist, so the run fails and stops before ever
+      // reaching the reviewer check — the case where it does succeed is
+      // covered separately below.
+      expect(result.stderr).toMatch(/\[debug\] agents: brokenexec → primary: brokenexec/);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--showdebug explains why review is skipped when the primary run actually succeeds",
+    async () => {
+      // A real, successful spawn (unlike execBackendConfig()'s nonexistent
+      // command) reaches the reviewer check — this is the only backend
+      // config in the suite that both runs for real and declares no
+      // printArgs, so it's the one that can pin that debug message.
+      const dir = makeTmpDir();
+      const script = writeAgentScript(dir, "workingexec", "ran");
+      writeConfig(dir, {
+        backends: [execBackendConfig({ command: script.command, args: script.args })],
+      });
+      const prompt = "please refactor the auth module for clarity";
+      const result = await runCli(dir, ["--orchestra", "--showdebug", prompt]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toMatch(/\[debug\] no reviewer-capable backend/);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "without --showdebug, orchestra's debug reasoning stays silent",
+    async () => {
+      const dir = makeTmpDir();
+      writeConfig(dir, { backends: [execBackendConfig()] });
+      const prompt = "please refactor the auth module for clarity";
+      const result = await runCli(dir, ["--orchestra", prompt]);
+      expect(result.stderr).not.toMatch(/\[debug\]/);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "orchestra mode really splits a task across two agents and runs them in order",
+    async () => {
+      // The claim under test: decomposeTask's plan isn't just parsed, it
+      // actually drives two DIFFERENT commands, in the plan's order, in one
+      // CLI invocation. Each "agent" here is a distinct Node script that
+      // appends its own letter to a marker file — order and presence of both
+      // letters is direct proof, not an inference from stats or messages.
+      const decomposition = JSON.stringify({
+        steps: [
+          { instruction: "do part one", backend_id: "agentA" },
+          { instruction: "do part two", backend_id: "agentB" },
+        ],
+      });
+      const { server, port } = await startNonStreamingStub(decomposition);
+      try {
+        const dir = makeTmpDir();
+        const scriptA = writeAgentScript(dir, "agentA", "A");
+        const scriptB = writeAgentScript(dir, "agentB", "B");
+        writeConfig(dir, {
+          openrouter: { baseUrl: `http://127.0.0.1:${port}` },
+          backends: [
+            execBackendConfig({
+              id: "agentA",
+              label: "Agent A",
+              command: scriptA.command,
+              args: scriptA.args,
+            }),
+            execBackendConfig({
+              id: "agentB",
+              label: "Agent B",
+              command: scriptB.command,
+              args: scriptB.args,
+            }),
+          ],
+        });
+        // "auth.ts" is a real file extension, so the heuristic classifies this
+        // as "code" on its own — the classify() call itself gets the stub's
+        // decomposition-shaped JSON back (wrong shape for it) and no-ops.
+        const prompt = "please refactor the login function in auth.ts for clarity";
+        const result = await runCli(dir, ["--orchestra", "--showdebug", prompt], {
+          OPENROUTER_API_KEY: "test-key",
+        });
+
+        expect(result.status).toBe(0);
+        const marker = fs.readFileSync(path.join(dir, "marker.txt"), "utf8").replace(/\r\n/g, "\n");
+        expect(marker).toBe("A\nB\n");
+        expect(result.stderr).toMatch(/split into 2 step\(s\) across 2 agent\(s\)/);
+        const step1 = result.stderr.indexOf("step 1/2 → Agent A");
+        const step2 = result.stderr.indexOf("step 2/2 → Agent B");
+        expect(step1).toBeGreaterThan(-1);
+        expect(step2).toBeGreaterThan(step1);
+      } finally {
+        server.close();
+      }
     },
     CLI_TIMEOUT_MS,
   );

@@ -68,4 +68,11 @@ describe("buildExecArgs", () => {
       buildExecArgs(gemini, { prompt: "hi", continueSession: false, model: "pro" }),
     ).toEqual(["-m", "pro", "hi"]);
   });
+
+  test("an explicit template overrides the backend's own args — orchestra mode's print invocation", () => {
+    const backend = exec({ printArgs: ["-p", "{prompt}"] });
+    expect(
+      buildExecArgs(backend, { prompt: "review this", continueSession: false }, backend.printArgs),
+    ).toEqual(["-p", "review this"]);
+  });
 });

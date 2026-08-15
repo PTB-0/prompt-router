@@ -41,6 +41,7 @@ $ prompt-router "fix the login bug in auth.ts"
 - [Quick start](#quick-start)
 - [Usage](#usage)
 - [The plan-first pipeline](#the-plan-first-pipeline)
+- [Orchestra mode](#orchestra-mode)
 - [Model & effort selection](#model--effort-selection)
 - [Local models](#local-models)
 - [Configuration](#configuration)
@@ -122,6 +123,9 @@ prompt-router -c "and which one scales better?"   # follow-up: carries conversat
 prompt-router --to local "explain this simply"    # force a backend — any enabled configured id
 prompt-router --model opus --effort high "..."    # force Claude Code's model/effort for one run
 prompt-router --no-route "quick edit"             # skip everything, straight to the agentic backend
+prompt-router --orchestra "..."                   # force orchestra mode (see below), regardless of complexity
+prompt-router --no-orchestra "..."                # disable orchestra mode even if it would trigger automatically
+prompt-router --showdebug "..."                   # print orchestra mode's selection and verdict reasoning
 prompt-router --stats                             # per-backend spend, and what the routing saved
 prompt-router --clear-session                     # forget the stored conversation
 ```
@@ -147,6 +151,17 @@ For code tasks classified above the complexity threshold, prompt-router inserts 
 3. The approved plan is attached to your prompt, so Claude Code begins executing instead of exploring.
 
 You spend zero premium tokens on planning, and the expensive agent gets a map. This is the "make the hard work easy" half of the deal.
+
+## Orchestra mode
+
+When you have more than one coding agent configured (Claude Code, Codex, Aider, ...), orchestra mode is a conductor that splits your task across them by what each is declared to be good at, instead of always using the highest-priority one — then automatically reviews the combined result:
+
+1. **Decompose** — a free model breaks the task into an ordered list of steps and assigns each step to whichever agent's declared `strengths` fit it best. A task that doesn't need splitting stays a single step; with only one agent configured (or `orchestra.decompose: false`), this step is skipped entirely and the whole task goes to that one agent.
+2. **Execute** — each step's assigned agent runs interactively, in order, in the same repository — a later step sees every earlier step's changes.
+3. **Review** — the resulting `git diff` (spanning every step) is sent to a (re-selected) reviewer in non-interactive/print mode; its verdict is parsed back out (`ORCHESTRA_VERDICT: CLEAN` or `ISSUES`) so prompt-router can act on it, unlike the interactive runs whose output is otherwise never seen.
+4. **Fix** — if issues are found, a (re-selected) fixer addresses them and the change is reviewed again, up to `orchestra.maxFixRounds` times.
+
+It only engages for `code` tasks at or above `orchestra.complexityThreshold`, and only when at least one exec backend is enabled — `--orchestra` forces it for any run (handy for testing), `--no-orchestra` disables it even when it would trigger automatically, and `--showdebug` prints the step plan, which agent was picked at each stage, and why. Review needs a backend that declares `printArgs` (Claude Code's default config sets this to `-p {prompt}`); without one, execution still happens but the review/fix loop is skipped. Outside a git repository, review is skipped the same way. An explicit `--to` or a numbered override at the confirmation bar always bypasses orchestra mode entirely — a direct backend choice isn't second-guessed.
 
 ## Model & effort selection
 
@@ -194,7 +209,9 @@ Everything lives in `~/.config/prompt-router/` (override the directory with `PRO
       "categories": ["code"], "priority": 10, "enabled": true,
       "command": "claude",
       "args": ["{model}", "{effort}", "{continue}", "{prompt}"],
-      "supportsModelTier": true, "supportsPlan": true, "supportsContinue": true
+      "supportsModelTier": true, "supportsPlan": true, "supportsContinue": true,
+      "strengths": "General-purpose agentic coding: multi-file edits, refactors, debugging, tests.",
+      "printArgs": ["-p", "{prompt}"]   // non-interactive invocation orchestra mode's review/fix loop uses
     },
     {
       "id": "local", "kind": "chat", "label": "local model",
@@ -233,6 +250,12 @@ Everything lives in `~/.config/prompt-router/` (override the directory with `PRO
   "modelSelection": {
     "enabled": true              // false = never auto-pick --model/--effort for Claude Code
   },
+  "orchestra": {
+    "enabled": true,
+    "complexityThreshold": 0.75,  // at or above this, code tasks get orchestra mode automatically
+    "maxFixRounds": 2,             // how many "reviewer finds issues → fixer addresses them" rounds before stopping
+    "decompose": true              // split the task across multiple agents' steps; false = one agent per task
+  },
   "thresholds": {
     "confidence": 0.6,          // below this, the route is flagged for your attention
     "planComplexity": 0.7,      // at or above this, code tasks get the plan-first pipeline
@@ -253,6 +276,11 @@ another coding agent, or a paid model for hard questions, is a config edit rathe
 than a release. **A config without a `backends` key keeps working** — the three
 defaults above are derived from the older `local` / `openrouter.answerModels`
 blocks, so nothing needs migrating by hand.
+
+Adding a second (or third) coding agent — Codex, Aider, OpenCode, whatever you run
+— is what makes orchestra mode meaningful: give each one a `strengths` string
+describing what it's good at, and a `printArgs` template if it supports a
+non-interactive/print mode, so it's eligible to review and fix, not just execute.
 
 Setting `"enabled": false` takes a backend out of routing entirely — `--to` on it
 is refused rather than silently overriding the setting. And an exec backend's
@@ -311,6 +339,7 @@ Built test-first: every routing rule in `src/route.ts` and every heuristic in `s
 - [ ] npm publish with GitHub Actions provenance
 - [ ] Reuse [prompt-op](https://github.com/PTB-0/prompt-op)'s optimizer as a library dependency
 - [x] Per-backend capability manifests
+- [x] Orchestra mode — multi-agent task decomposition with automatic review/fix
 
 ## Related
 

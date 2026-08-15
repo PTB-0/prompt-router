@@ -20,6 +20,17 @@ import { runInit } from "./init.js";
 import type { ChatMessage } from "./llm.js";
 import { ensureChatBackend } from "./local.js";
 import { appendRoutingLog } from "./log.js";
+import {
+  buildFixPrompt,
+  buildReviewPrompt,
+  buildStepPrompt,
+  captureDiff,
+  decomposeTask,
+  parseVerdict,
+  runPrintTask,
+  selectAgent,
+  type AgentCandidate,
+} from "./orchestra.js";
 import { attachPlan, generatePlan } from "./plan.js";
 import { decideRoute } from "./route.js";
 import { appendToSession, clearSession, loadSession } from "./session.js";
@@ -40,6 +51,7 @@ import { isBatchShim, resolveWindowsCommand, toShellArgs } from "./winShell.js";
 import {
   askPlanChoice,
   askRouteChoice,
+  showDebug,
   showError,
   showPassThrough,
   showPlan,
@@ -57,6 +69,9 @@ const USAGE = `Usage: prompt-router "your prompt"
       --model <name>   force the Claude Code model for this run (e.g. opus, sonnet, haiku)
       --effort <level> force the Claude Code effort for this run: low | medium | high | xhigh | max
       --no-route       skip optimization and routing, go straight to the agentic backend
+      --orchestra      force orchestra mode: agent selection + automatic review/fix loop
+      --no-orchestra   disable orchestra mode even if it would trigger automatically
+      --showdebug      print orchestra mode's selection and verdict reasoning
       --stats          show routing statistics
       --clear-session  forget the stored conversation
 `;
@@ -70,6 +85,9 @@ interface CliArgs {
   forceEffort: EffortLevel | null;
   showStats: boolean;
   clear: boolean;
+  orchestra: boolean;
+  noOrchestra: boolean;
+  showDebug: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -82,6 +100,9 @@ function parseArgs(argv: string[]): CliArgs {
     forceEffort: null,
     showStats: false,
     clear: false,
+    orchestra: false,
+    noOrchestra: false,
+    showDebug: false,
   };
   const parts: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -89,6 +110,9 @@ function parseArgs(argv: string[]): CliArgs {
     if (arg === undefined) continue;
     if (arg === "-c" || arg === "--continue") args.continueSession = true;
     else if (arg === "--no-route") args.noRoute = true;
+    else if (arg === "--orchestra") args.orchestra = true;
+    else if (arg === "--no-orchestra") args.noOrchestra = true;
+    else if (arg === "--showdebug") args.showDebug = true;
     else if (arg === "--stats") args.showStats = true;
     else if (arg === "--clear-session") args.clear = true;
     else if (arg === "--to") {
@@ -165,6 +189,35 @@ function commandUnresolvable(command: string): boolean {
   return process.platform === "win32" && resolveWindowsCommand(command) === null;
 }
 
+interface ExecOutcome {
+  status: number;
+  /** Set when the spawn itself failed — the prompt was never handed off. */
+  failMessage?: string;
+}
+
+/**
+ * The non-exiting core of running an exec backend interactively. Split out
+ * of `runExec` so orchestra mode's multi-round loop can run several exec
+ * backends in one process invocation and only exit once, at the very end.
+ */
+function spawnExecInteractive(
+  backend: ExecBackend,
+  text: string,
+  continueSession: boolean,
+  model?: string,
+  effort?: EffortLevel,
+): ExecOutcome {
+  if (commandUnresolvable(backend.command)) return { status: 1, failMessage: "command not found" };
+
+  const plan = execSpawnPlan(backend, { prompt: text, continueSession, model, effort });
+  const result = spawnSync(plan.command, plan.args, {
+    stdio: "inherit",
+    shell: plan.useShell,
+  });
+  if (result.error) return { status: 1, failMessage: result.error.message };
+  return { status: result.status ?? 1 };
+}
+
 function runExec(
   backend: ExecBackend,
   text: string,
@@ -172,22 +225,14 @@ function runExec(
   model?: string,
   effort?: EffortLevel,
 ): never {
-  const fail = (reason: string): never => {
-    showError(`failed to run ${backend.command}: ${reason}`);
+  const outcome = spawnExecInteractive(backend, text, continueSession, model, effort);
+  if (outcome.failMessage) {
+    showError(`failed to run ${backend.command}: ${outcome.failMessage}`);
     process.stderr.write("Your prompt, so it is not lost:\n\n");
     process.stdout.write(text + "\n");
     process.exit(1);
-  };
-
-  if (commandUnresolvable(backend.command)) fail("command not found");
-
-  const plan = execSpawnPlan(backend, { prompt: text, continueSession, model, effort });
-  const result = spawnSync(plan.command, plan.args, {
-    stdio: "inherit",
-    shell: plan.useShell,
-  });
-  if (result.error) fail(result.error.message);
-  process.exit(result.status ?? 1);
+  }
+  process.exit(outcome.status);
 }
 
 /**
@@ -268,6 +313,26 @@ function resolveDispatch(
   };
 }
 
+/** Runs the plan-first pipeline when eligible; otherwise returns `prompt` unchanged. */
+async function maybeAttachPlan(prompt: string, planFirst: boolean, config: RouterConfig): Promise<string> {
+  if (!planFirst) return prompt;
+
+  const stopSpinner = startSpinner("Drafting plan...");
+  const plan = await generatePlan(prompt, config);
+  stopSpinner();
+  if (!plan) {
+    showPassThrough("plan generation unavailable — sending the prompt without a plan");
+    return prompt;
+  }
+
+  showPlan(plan);
+  const planChoice = await askPlanChoice();
+  process.stderr.write("\n");
+  if (planChoice === "accept") return attachPlan(prompt, plan);
+  if (planChoice === "edit") return attachPlan(prompt, openInEditor(plan));
+  return prompt; // "skip" keeps the prompt as-is
+}
+
 async function runExecRoute(
   backend: ExecBackend,
   prompt: string,
@@ -276,22 +341,7 @@ async function runExecRoute(
   config: RouterConfig,
   args: CliArgs,
 ): Promise<never> {
-  let finalPrompt = prompt;
-  if (dispatch.planFirst) {
-    const stopSpinner = startSpinner("Drafting plan...");
-    const plan = await generatePlan(prompt, config);
-    stopSpinner();
-    if (plan) {
-      showPlan(plan);
-      const planChoice = await askPlanChoice();
-      process.stderr.write("\n");
-      if (planChoice === "accept") finalPrompt = attachPlan(prompt, plan);
-      else if (planChoice === "edit") finalPrompt = attachPlan(prompt, openInEditor(plan));
-      // "skip" keeps the prompt as-is
-    } else {
-      showPassThrough("plan generation unavailable — sending the prompt without a plan");
-    }
-  }
+  const finalPrompt = await maybeAttachPlan(prompt, dispatch.planFirst, config);
 
   // The exec backend serves the prompt itself, so nothing was diverted and the
   // output tokens are unobservable once the terminal is handed over.
@@ -305,6 +355,159 @@ async function runExecRoute(
   });
   logRouting(config, backend.id, dispatch);
   runExec(backend, finalPrompt, args.continueSession, dispatch.model, dispatch.effort);
+}
+
+function toAgentCandidates(backends: readonly ExecBackend[]): AgentCandidate[] {
+  return backends.map((b) => ({ id: b.id, label: b.label, strengths: b.strengths }));
+}
+
+/**
+ * Orchestra mode. Either:
+ *  - a conductor LLM call splits the task into an ordered, per-agent step
+ *    list (decomposeTask) and each step runs on its assigned exec backend in
+ *    sequence, in this same repo; or
+ *  - when decomposition is off, unavailable, or there are too few agents to
+ *    make it meaningful, the whole task goes to a single selected agent —
+ *    orchestra mode's original, simpler behaviour.
+ * Either way, the result is one automatic non-interactive review of the
+ * resulting `git diff`, with up to `config.orchestra.maxFixRounds` rounds of
+ * "reviewer finds issues → a (re-selected) fixer addresses them → reviewed
+ * again" before handing control back to the user. Every round records
+ * stats/logging exactly like runExecRoute; the process exits once, at the
+ * end, with the last round's exit status.
+ */
+async function runOrchestraRoute(
+  execBackends: ExecBackend[],
+  prompt: string,
+  decision: CategoryDecision,
+  cls: Classification | null,
+  config: RouterConfig,
+  args: CliArgs,
+): Promise<never> {
+  const dir = configDir();
+  const candidates = toAgentCandidates(execBackends);
+
+  const runRound = (backend: ExecBackend, text: string, dispatch: Dispatch): ExecOutcome => {
+    recordDispatch(dir, {
+      backendId: backend.id,
+      category: decision.category,
+      usage: estimateUsage(text),
+      spend: 0,
+      savedTokens: 0,
+      savedUsd: 0,
+    });
+    logRouting(config, backend.id, dispatch);
+    const outcome = spawnExecInteractive(backend, text, args.continueSession, dispatch.model, dispatch.effort);
+    if (outcome.failMessage) {
+      showError(`failed to run ${backend.command}: ${outcome.failMessage}`);
+      process.stderr.write("Your prompt, so it is not lost:\n\n");
+      process.stdout.write(text + "\n");
+    }
+    return outcome;
+  };
+
+  const steps = config.orchestra.decompose ? await decomposeTask(prompt, candidates, config) : null;
+  let lastOutcome: ExecOutcome;
+
+  if (steps) {
+    showDebug(
+      args.showDebug,
+      `plan: ${steps.map((s, i) => `${i + 1}.[${s.backendId}] ${s.instruction}`).join(" | ")}`,
+    );
+    const agentCount = new Set(steps.map((s) => s.backendId)).size;
+    showPassThrough(`orchestra: split into ${steps.length} step(s) across ${agentCount} agent(s)`);
+
+    lastOutcome = { status: 0 };
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i]!;
+      const backend = execBackends.find((b) => b.id === step.backendId) ?? execBackends[0]!;
+      showPassThrough(`orchestra: step ${i + 1}/${steps.length} → ${backend.label}`);
+      const stepDispatch = resolveDispatch(backend, decision, cls, step.instruction, config, args);
+      lastOutcome = runRound(backend, buildStepPrompt(prompt, steps, i), stepDispatch);
+      if (lastOutcome.failMessage) break; // a step failed to spawn — later steps would build on nothing
+    }
+  } else {
+    const primaryId = (await selectAgent(prompt, candidates, config)) ?? execBackends[0]!.id;
+    const primary = execBackends.find((b) => b.id === primaryId) ?? execBackends[0]!;
+    showDebug(args.showDebug, `agents: ${candidates.map((c) => c.id).join(", ")} → primary: ${primary.id}`);
+    showPassThrough(`orchestra: ${primary.label} takes this task`);
+
+    const primaryDispatch = resolveDispatch(primary, decision, cls, prompt, config, args);
+    const primaryPrompt = await maybeAttachPlan(prompt, primaryDispatch.planFirst, config);
+    lastOutcome = runRound(primary, primaryPrompt, primaryDispatch);
+  }
+
+  // A spawn failure (command not found, etc.) means nothing was diverted and
+  // there is nothing sensible to review — same contract as runExec's single
+  // attempt: report it and stop, rather than reviewing whatever partial diff
+  // is lying around.
+  if (lastOutcome.failMessage) process.exit(1);
+  let lastStatus = lastOutcome.status;
+
+  const reviewers = execBackends.filter((b) => b.printArgs && b.printArgs.length > 0);
+  if (reviewers.length === 0) {
+    showDebug(args.showDebug, "no reviewer-capable backend declares printArgs — skipping review");
+    process.exit(lastStatus);
+  }
+  const reviewerCandidates = toAgentCandidates(reviewers);
+
+  let task = prompt;
+  for (let round = 0; round <= config.orchestra.maxFixRounds; round++) {
+    const diff = captureDiff();
+    if (diff === null) {
+      showPassThrough("orchestra: not a git repository — skipping review");
+      break;
+    }
+    if (diff.trim() === "") {
+      showPassThrough("orchestra: no changes to review");
+      break;
+    }
+
+    const reviewerId = (await selectAgent(task, reviewerCandidates, config)) ?? reviewers[0]!.id;
+    const reviewer = reviewers.find((b) => b.id === reviewerId) ?? reviewers[0]!;
+    showDebug(args.showDebug, `reviewer: ${reviewer.id}`);
+
+    const stopSpinner = startSpinner(`${reviewer.label} is reviewing the change...`);
+    const printResult = runPrintTask(reviewer, { prompt: buildReviewPrompt(task, diff), continueSession: false });
+    stopSpinner();
+
+    if (printResult.text === null) {
+      showPassThrough(`orchestra: ${reviewer.label} review failed to run — stopping the review loop`);
+      break;
+    }
+
+    const verdict = parseVerdict(printResult.text);
+    showDebug(args.showDebug, `verdict: ${verdict.status}\n${verdict.raw}`);
+
+    if (verdict.status === "clean") {
+      showPassThrough(`orchestra: ${reviewer.label} found no issues`);
+      break;
+    }
+    if (verdict.status === "unknown") {
+      showError(`orchestra: ${reviewer.label} did not return a clear verdict — stopping the review loop`);
+      process.stderr.write(verdict.raw + "\n");
+      break;
+    }
+
+    process.stderr.write("\n" + pc.yellow("  orchestra: issues found") + "\n");
+    process.stderr.write(pc.dim("  " + verdict.notes.replace(/\n/g, "\n  ")) + "\n\n");
+
+    if (round >= config.orchestra.maxFixRounds) {
+      showPassThrough(`orchestra: ${config.orchestra.maxFixRounds} fix round(s) used — stopping, review by hand`);
+      break;
+    }
+
+    const fixerId = (await selectAgent(verdict.notes, candidates, config)) ?? execBackends[0]!.id;
+    const fixer = execBackends.find((b) => b.id === fixerId) ?? execBackends[0]!;
+    showDebug(args.showDebug, `fixer: ${fixer.id}`);
+    showPassThrough(`orchestra: ${fixer.label} is fixing round ${round + 1}`);
+
+    task = verdict.notes;
+    const fixDispatch = resolveDispatch(fixer, decision, cls, task, config, args);
+    lastStatus = runRound(fixer, buildFixPrompt(prompt, verdict.notes), fixDispatch).status;
+  }
+
+  process.exit(lastStatus);
 }
 
 async function runChatRoute(
@@ -548,7 +751,24 @@ async function main(): Promise<void> {
   }
 
   if (head.kind === "exec") {
-    await runExecRoute(head, finalPrompt, dispatch, decision.category, config, args);
+    // An explicit backend choice — --to or a numbered override at the
+    // confirmation bar — is a direct "run this one" instruction; orchestra's
+    // own agent selection would second-guess it, so it's skipped entirely.
+    const explicitBackend = args.forceBackendId !== null || choice.overrideBackendId !== undefined;
+    const execBackends = candidates.filter((b): b is ExecBackend => b.kind === "exec");
+    const complexity = cls?.complexity ?? estimateComplexity(finalPrompt);
+    const orchestraAuto =
+      config.orchestra.enabled &&
+      decision.category === "code" &&
+      complexity >= config.orchestra.complexityThreshold;
+    const useOrchestra =
+      !explicitBackend && !args.noOrchestra && (args.orchestra || orchestraAuto) && execBackends.length > 0;
+
+    if (useOrchestra) {
+      await runOrchestraRoute(execBackends, finalPrompt, decision, cls, config, args);
+    } else {
+      await runExecRoute(head, finalPrompt, dispatch, decision.category, config, args);
+    }
   } else {
     // runChatRoute records the backend that actually answers, since its
     // fallback chain can land somewhere other than the head candidate.

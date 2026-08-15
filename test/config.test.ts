@@ -46,6 +46,29 @@ describe("resolveConfig", () => {
     );
   });
 
+  test("orchestra defaults are applied", () => {
+    const cfg = resolveConfig(undefined, {});
+    expect(cfg.orchestra.enabled).toBe(true);
+    expect(cfg.orchestra.complexityThreshold).toBe(0.75);
+    expect(cfg.orchestra.maxFixRounds).toBe(2);
+    expect(cfg.orchestra.decompose).toBe(true);
+  });
+
+  test("orchestra.decompose can be disabled via config file", () => {
+    expect(resolveConfig({ orchestra: { decompose: false } }, {}).orchestra.decompose).toBe(false);
+  });
+
+  test("orchestra settings can be overridden without wiping siblings", () => {
+    const cfg = resolveConfig({ orchestra: { maxFixRounds: 1 } }, {});
+    expect(cfg.orchestra.maxFixRounds).toBe(1);
+    expect(cfg.orchestra.enabled).toBe(true);
+    expect(cfg.orchestra.complexityThreshold).toBe(0.75);
+  });
+
+  test("orchestra can be disabled via config file", () => {
+    expect(resolveConfig({ orchestra: { enabled: false } }, {}).orchestra.enabled).toBe(false);
+  });
+
   test("model tier thresholds can be overridden without wiping siblings", () => {
     const cfg = resolveConfig({ thresholds: { modelTierLow: 0.2 } }, {});
     expect(cfg.thresholds.modelTierLow).toBe(0.2);
@@ -78,6 +101,43 @@ describe("backend registry config", () => {
     expect(exec(cfg, "claude").supportsPlan).toBe(true);
     expect(chat(cfg, "local").categories).toEqual(["simple-qa"]);
     expect(chat(cfg, "openrouter").categories).toEqual(["simple-qa", "deep-qa"]);
+  });
+
+  test("claude carries a strengths profile and a print-mode invocation for orchestra mode", () => {
+    const claude = exec(resolveConfig({}, {}), "claude");
+    expect(claude.strengths).toBeTruthy();
+    expect(claude.printArgs).toEqual(["-p", "{prompt}"]);
+  });
+
+  test("an exec backend can declare strengths and printArgs in an explicit backends array", () => {
+    const cfg = resolveConfig(
+      {
+        backends: [
+          {
+            id: "codex",
+            kind: "exec",
+            command: "codex",
+            args: ["{prompt}"],
+            strengths: "Large-context refactors",
+            printArgs: ["--print", "{prompt}"],
+          },
+        ],
+      },
+      {},
+    );
+    const codex = exec(cfg, "codex");
+    expect(codex.strengths).toBe("Large-context refactors");
+    expect(codex.printArgs).toEqual(["--print", "{prompt}"]);
+  });
+
+  test("an exec backend without strengths/printArgs leaves both undefined", () => {
+    const cfg = resolveConfig(
+      { backends: [{ id: "aider", kind: "exec", command: "aider", args: ["{prompt}"] }] },
+      {},
+    );
+    const aider = exec(cfg, "aider");
+    expect(aider.strengths).toBeUndefined();
+    expect(aider.printArgs).toBeUndefined();
   });
 
   test("claude carries reference pricing for every tier", () => {

@@ -21,6 +21,14 @@ export interface RouterConfig {
   modelSelection: {
     enabled: boolean;
   };
+  orchestra: {
+    enabled: boolean;
+    complexityThreshold: number;
+    maxFixRounds: number;
+    /** Split the task across multiple agents when true; hand the whole task
+     *  to one selected agent when false. */
+    decompose: boolean;
+  };
   thresholds: {
     confidence: number;
     planComplexity: number;
@@ -65,6 +73,16 @@ const DEFAULTS: RouterConfig = {
   },
   modelSelection: {
     enabled: true,
+  },
+  orchestra: {
+    enabled: true,
+    // Independent of thresholds.planComplexity — orchestra mode's cost (an
+    // extra LLM call plus a non-interactive review run) is higher than
+    // plan-first's, so it only engages for tasks complex enough to be worth
+    // a second agent's look.
+    complexityThreshold: 0.75,
+    maxFixRounds: 2,
+    decompose: true,
   },
   thresholds: {
     confidence: 0.6,
@@ -111,6 +129,8 @@ export function defaultBackends(): Backend[] {
       supportsPlan: true,
       supportsContinue: true,
       modelPricing: { ...CLAUDE_MODEL_PRICING },
+      strengths: "General-purpose agentic coding: multi-file edits, refactors, debugging, tests.",
+      printArgs: ["-p", "{prompt}"],
     },
     {
       id: "local",
@@ -188,6 +208,8 @@ function parseBackend(raw: unknown): Backend | null {
         modelPricing[model] = pickPricing(value, FREE);
       }
     }
+    const strengths = typeof raw["strengths"] === "string" ? raw["strengths"] : undefined;
+    const printArgs = pickStringArray(raw["printArgs"], []);
     return {
       id,
       label,
@@ -204,6 +226,8 @@ function parseBackend(raw: unknown): Backend | null {
       supportsPlan: pickBoolean(raw["supportsPlan"], false),
       supportsContinue: pickBoolean(raw["supportsContinue"], false),
       modelPricing,
+      ...(strengths ? { strengths } : {}),
+      ...(printArgs.length > 0 ? { printArgs } : {}),
     };
   }
 
@@ -317,6 +341,15 @@ export function resolveConfig(fileCfg: unknown, env: NodeJS.ProcessEnv): RouterC
     modelSelection["enabled"],
     cfg.modelSelection.enabled,
   );
+
+  const orchestra = isRecord(file["orchestra"]) ? file["orchestra"] : {};
+  cfg.orchestra.enabled = pickBoolean(orchestra["enabled"], cfg.orchestra.enabled);
+  cfg.orchestra.complexityThreshold = pickScore(
+    orchestra["complexityThreshold"],
+    cfg.orchestra.complexityThreshold,
+  );
+  cfg.orchestra.maxFixRounds = pickPositive(orchestra["maxFixRounds"], cfg.orchestra.maxFixRounds);
+  cfg.orchestra.decompose = pickBoolean(orchestra["decompose"], cfg.orchestra.decompose);
 
   const thresholds = isRecord(file["thresholds"]) ? file["thresholds"] : {};
   cfg.thresholds.confidence = pickScore(thresholds["confidence"], cfg.thresholds.confidence);

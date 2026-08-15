@@ -21,14 +21,19 @@ export interface ChatAttempt {
   spend: number;
 }
 
-/** Everything needed to spawn an exec backend, without performing the spawn. */
+/**
+ * Everything needed to spawn an exec backend, without performing the spawn.
+ * `template` defaults to the interactive `args`; pass `backend.printArgs` to
+ * build the non-interactive invocation orchestra mode's review/fix loop uses.
+ */
 export function execSpawnPlan(
   backend: ExecBackend,
   ctx: ExecArgContext,
+  template: string[] = backend.args,
 ): { command: string; args: string[]; useShell: boolean } {
   const useShell = process.platform === "win32";
   const args = toShellArgs(
-    buildExecArgs(backend, ctx),
+    buildExecArgs(backend, ctx, template),
     useShell,
     useShell && isBatchShim(backend.command),
   );

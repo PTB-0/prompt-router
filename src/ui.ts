@@ -179,6 +179,12 @@ export function showError(message: string): void {
   process.stderr.write(pc.yellow(`prompt-router: ${message}\n`));
 }
 
+/** Gated by --showdebug: orchestra mode's selection/verdict reasoning, silent otherwise. */
+export function showDebug(enabled: boolean, message: string): void {
+  if (!enabled) return;
+  process.stderr.write(pc.dim(`  [debug] ${message.replace(/\n/g, "\n  ")}\n`));
+}
+
 export function startSpinner(label: string): () => void {
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   let i = 0;
