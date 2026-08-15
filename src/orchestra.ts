@@ -281,6 +281,12 @@ export function runPrintTask(backend: ExecBackend, ctx: ExecArgContext): PrintRe
     encoding: "utf8",
     shell: plan.useShell,
     maxBuffer: GIT_MAX_BUFFER,
+    // stdin defaults to an open, empty pipe under spawnSync — some agentic
+    // CLIs (confirmed: Codex's `exec` mode) block reading it until EOF when
+    // they detect a non-TTY stdin, which never arrives from an open-but-idle
+    // pipe. "ignore" closes stdin immediately, so any such backend sees EOF
+    // right away instead of hanging the whole review/fix loop forever.
+    stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.error) return { text: null, status: null };
   return { text: (result.stdout ?? "").trim(), status: result.status };

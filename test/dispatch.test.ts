@@ -90,19 +90,38 @@ describe("execSpawnPlan", () => {
   // both windows-latest CI and this machine produce.
   test("expands the template and reports the command", () => {
     const plan = execSpawnPlan(exec, { prompt: "hi", continueSession: false, model: "opus" });
-    expect(plan.command).toBe("claude");
     if (process.platform === "win32") {
       expect(plan.useShell).toBe(true);
+      // The command gets the same caret-escaping as every arg (see the
+      // execSpawnPlan doc comment) — a bare word escapes identically to any
+      // other bare-word token, which the args assertions below already pin.
+      expect(plan.command).toBe('^"claude^"');
       expect(plan.args).toContain('^"--model^"');
       expect(plan.args).toContain('^"opus^"');
       expect(plan.args).toContain('^"hi^"');
     } else {
       expect(plan.useShell).toBe(false);
+      expect(plan.command).toBe("claude");
       expect(plan.args).toContain("--model");
       expect(plan.args).toContain("opus");
       expect(plan.args).toContain("hi");
     }
   });
+
+  test.runIf(process.platform === "win32")(
+    "on win32, a command whose path contains a space is quoted so it actually resolves",
+    () => {
+      // Regression coverage for the real-world failure: an unquoted command
+      // containing a space (e.g. a node.exe under "C:\Program Files\...")
+      // gets split at that space once Node's shell:true join concatenates
+      // [command, ...args] into one string for cmd.exe — cmd then reports
+      // "'C:\Program' is not recognized...". Confirmed by spawning this
+      // exact plan for real before this fix.
+      const backend: ExecBackend = { ...exec, command: "C:\\Program Files\\nodejs\\node.exe" };
+      const plan = execSpawnPlan(backend, { prompt: "hi", continueSession: false });
+      expect(plan.command).toBe('^"C:\\Program^ Files\\nodejs\\node.exe^"');
+    },
+  );
 });
 
 describe("dispatchChat", () => {

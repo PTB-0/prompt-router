@@ -49,10 +49,12 @@ import type {
 } from "./types.js";
 import { isBatchShim, resolveWindowsCommand, toShellArgs } from "./winShell.js";
 import {
+  askOrchestraPlanChoice,
   askPlanChoice,
   askRouteChoice,
   showDebug,
   showError,
+  showOrchestraPlan,
   showPassThrough,
   showPlan,
   showRouting,
@@ -406,7 +408,15 @@ async function runOrchestraRoute(
     return outcome;
   };
 
-  const steps = config.orchestra.decompose ? await decomposeTask(prompt, candidates, config) : null;
+  const proposedSteps = config.orchestra.decompose ? await decomposeTask(prompt, candidates, config) : null;
+  let steps: typeof proposedSteps = null;
+  if (proposedSteps) {
+    showOrchestraPlan(proposedSteps);
+    const planChoice = await askOrchestraPlanChoice();
+    process.stderr.write("\n");
+    if (planChoice === "accept") steps = proposedSteps;
+    else showPassThrough("orchestra: plan declined — handing the whole task to one agent instead");
+  }
   let lastOutcome: ExecOutcome;
 
   if (steps) {

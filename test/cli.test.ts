@@ -633,6 +633,14 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
         expect(result.status).toBe(0);
         const marker = fs.readFileSync(path.join(dir, "marker.txt"), "utf8").replace(/\r\n/g, "\n");
         expect(marker).toBe("A\nB\n");
+        // The approval gate shows the plan before running it — non-interactive
+        // stdin auto-accepts, same as every other confirmation in this CLI.
+        // ANSI color codes sit between the "[agentX]" tag and the instruction
+        // text (see showOrchestraPlan), so these allow for escape codes rather
+        // than asserting the two are adjacent in the raw string.
+        expect(result.stderr).toMatch(/ORCHESTRA PLAN/);
+        expect(result.stderr).toMatch(/1\.\s*\[agentA\][\s\S]*?do part one/);
+        expect(result.stderr).toMatch(/2\.\s*\[agentB\][\s\S]*?do part two/);
         expect(result.stderr).toMatch(/split into 2 step\(s\) across 2 agent\(s\)/);
         const step1 = result.stderr.indexOf("step 1/2 → Agent A");
         const step2 = result.stderr.indexOf("step 2/2 → Agent B");

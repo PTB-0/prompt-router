@@ -2,7 +2,7 @@ import { costOf, estimateTokens } from "./cost.js";
 import { buildExecArgs, type ExecArgContext } from "./execArgs.js";
 import { streamChat, withModelFallback, type ChatMessage } from "./llm.js";
 import type { ChatBackend, ExecBackend, TokenUsage } from "./types.js";
-import { isBatchShim, toShellArgs } from "./winShell.js";
+import { isBatchShim, quoteForWindowsShell, toShellArgs } from "./winShell.js";
 
 export interface ChatDispatchOptions {
   messages: ChatMessage[];
@@ -25,6 +25,22 @@ export interface ChatAttempt {
  * Everything needed to spawn an exec backend, without performing the spawn.
  * `template` defaults to the interactive `args`; pass `backend.printArgs` to
  * build the non-interactive invocation orchestra mode's review/fix loop uses.
+ *
+ * The command itself needs the same caret-escaping as every arg: with
+ * `shell: true`, Node joins `[command, ...args]` with spaces into one string
+ * before handing it to cmd.exe, so an unescaped command containing a space
+ * (e.g. `C:\Program Files\nodejs\node.exe`) gets split at that space exactly
+ * like an unescaped arg would — cmd.exe then reports `'C:\Program' is not
+ * recognized...`. Confirmed empirically: only escaping args left this path
+ * broken for any command outside a space-free directory.
+ *
+ * Unlike args, the command NEVER gets the doubled caret layer: the "second
+ * pass" that forces doubling for a `.cmd`/`.bat` target is that shim's own
+ * `%*` re-expansion of its *arguments* — the command token is only ever
+ * parsed once, by the initial `cmd.exe /c` invocation that locates and
+ * launches the file, batch shim or not. Doubling it too was tried and
+ * confirmed broken: cmd.exe fails to resolve a batch shim's name at all once
+ * its own token carries a second caret layer.
  */
 export function execSpawnPlan(
   backend: ExecBackend,
@@ -32,12 +48,10 @@ export function execSpawnPlan(
   template: string[] = backend.args,
 ): { command: string; args: string[]; useShell: boolean } {
   const useShell = process.platform === "win32";
-  const args = toShellArgs(
-    buildExecArgs(backend, ctx, template),
-    useShell,
-    useShell && isBatchShim(backend.command),
-  );
-  return { command: backend.command, args, useShell };
+  const doubleEscape = useShell && isBatchShim(backend.command);
+  const args = toShellArgs(buildExecArgs(backend, ctx, template), useShell, doubleEscape);
+  const command = useShell ? quoteForWindowsShell(backend.command, false) : backend.command;
+  return { command, args, useShell };
 }
 
 /**

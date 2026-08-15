@@ -156,12 +156,14 @@ You spend zero premium tokens on planning, and the expensive agent gets a map. T
 
 When you have more than one coding agent configured (Claude Code, Codex, Aider, ...), orchestra mode is a conductor that splits your task across them by what each is declared to be good at, instead of always using the highest-priority one — then automatically reviews the combined result:
 
-1. **Decompose** — a free model breaks the task into an ordered list of steps and assigns each step to whichever agent's declared `strengths` fit it best. A task that doesn't need splitting stays a single step; with only one agent configured (or `orchestra.decompose: false`), this step is skipped entirely and the whole task goes to that one agent.
+1. **Decompose** — a free model breaks the task into an ordered list of steps and assigns each step to whichever agent's declared `strengths` fit it best. A task that doesn't need splitting stays a single step; with only one agent configured (or `orchestra.decompose: false`), this step is skipped entirely and the whole task goes to that one agent. When it does produce a plan, the plan is shown before anything runs — `[Y]` runs it as proposed, `[n]` falls back to handing the whole task to one selected agent instead (same timeout-defaults-to-accept behavior as every other confirmation in this CLI).
 2. **Execute** — each step's assigned agent runs interactively, in order, in the same repository — a later step sees every earlier step's changes.
 3. **Review** — the resulting `git diff` (spanning every step) is sent to a (re-selected) reviewer in non-interactive/print mode; its verdict is parsed back out (`ORCHESTRA_VERDICT: CLEAN` or `ISSUES`) so prompt-router can act on it, unlike the interactive runs whose output is otherwise never seen.
 4. **Fix** — if issues are found, a (re-selected) fixer addresses them and the change is reviewed again, up to `orchestra.maxFixRounds` times.
 
 It only engages for `code` tasks at or above `orchestra.complexityThreshold`, and only when at least one exec backend is enabled — `--orchestra` forces it for any run (handy for testing), `--no-orchestra` disables it even when it would trigger automatically, and `--showdebug` prints the step plan, which agent was picked at each stage, and why. Review needs a backend that declares `printArgs` (Claude Code's default config sets this to `-p {prompt}`); without one, execution still happens but the review/fix loop is skipped. Outside a git repository, review is skipped the same way. An explicit `--to` or a numbered override at the confirmation bar always bypasses orchestra mode entirely — a direct backend choice isn't second-guessed.
+
+**Known limitation:** the reviewer is instructed not to modify files (`buildReviewPrompt` in `src/orchestra.ts` says so explicitly), but that's a prompt, not a sandbox — nothing stops an agentic CLI from writing files during a "review" run anyway. Same trust boundary as every other instruction you give any agentic tool; orchestra mode doesn't add or remove protection here.
 
 ## Model & effort selection
 
@@ -281,6 +283,41 @@ Adding a second (or third) coding agent — Codex, Aider, OpenCode, whatever you
 — is what makes orchestra mode meaningful: give each one a `strengths` string
 describing what it's good at, and a `printArgs` template if it supports a
 non-interactive/print mode, so it's eligible to review and fix, not just execute.
+Two verified examples, as of each CLI's 2026 flags:
+
+```jsonc
+{
+  "id": "codex", "kind": "exec", "label": "Codex",
+  "categories": ["code"], "priority": 8, "enabled": true,
+  "command": "codex",
+  // -a never: no approval prompts (there's no human to answer them once the
+  // terminal is handed over). --sandbox workspace-write: real write access
+  // for execution; read-only for review — genuine enforcement against the
+  // reviewer editing files, not just a prompt asking it not to.
+  "args": ["-a", "never", "exec", "--sandbox", "workspace-write", "{model}", "{prompt}"],
+  "printArgs": ["-a", "never", "exec", "--sandbox", "read-only", "{prompt}"],
+  "modelFlag": "-m",
+  "supportsModelTier": false,   // codex's reasoning-effort flag is `-c model_reasoning_effort=...`,
+                                 // not a plain --effort <value> — doesn't fit this template's {effort}
+  "supportsContinue": false,    // codex's session resume is a subcommand (`exec resume --last`),
+                                 // not an appended flag — doesn't fit this template's {continue}
+  "strengths": "OpenAI Codex — strong at greenfield generation and broad refactors."
+},
+{
+  "id": "opencode", "kind": "exec", "label": "OpenCode",
+  "categories": ["code"], "priority": 7, "enabled": true,
+  "command": "opencode",
+  // --auto: auto-approves permissions not explicitly denied, so it doesn't
+  // block waiting for a human once the terminal is handed over.
+  "args": ["run", "--auto", "{model}", "{continue}", "{prompt}"],
+  "printArgs": ["run", "--auto", "{prompt}"],
+  "modelFlag": "--model",       // value format is "provider/model", e.g. "anthropic/claude-sonnet-5"
+  "continueFlag": "--continue",
+  "supportsModelTier": false,
+  "supportsContinue": true,
+  "strengths": "OpenCode — broad multi-provider model access, good at exploratory/open-ended tasks."
+}
+```
 
 Setting `"enabled": false` takes a backend out of routing entirely — `--to` on it
 is refused rather than silently overriding the setting. And an exec backend's

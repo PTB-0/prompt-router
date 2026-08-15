@@ -1,5 +1,6 @@
 import * as readline from "readline";
 import pc from "picocolors";
+import type { OrchestraStep } from "./orchestra.js";
 import type { Backend, Classification, Dispatch } from "./types.js";
 
 const WIDTH = Math.min(process.stderr.columns ?? 80, 100);
@@ -167,6 +168,67 @@ export function askPlanChoice(): Promise<PlanChoice> {
       if (answer === "n" || answer === "no") finish("skip");
       else if (answer === "e" || answer === "edit") finish("edit");
       else finish("accept");
+    });
+  });
+}
+
+export type OrchestraPlanChoice = "accept" | "skip";
+
+export function showOrchestraPlan(steps: readonly OrchestraStep[]): void {
+  const err = process.stderr;
+  err.write("\n" + pc.dim(LINE) + "\n");
+  err.write(pc.bold("  ORCHESTRA PLAN") + pc.dim(` — ${steps.length} step(s) across ${new Set(steps.map((s) => s.backendId)).size} agent(s)\n`));
+  err.write(pc.dim(LINE) + "\n\n");
+  steps.forEach((step, i) => {
+    err.write(pc.cyan(`  ${i + 1}. [${step.backendId}] `) + step.instruction.replace(/\n/g, "\n     ") + "\n");
+  });
+  err.write("\n" + pc.dim(LINE) + "\n");
+}
+
+/**
+ * No "edit" option, unlike askPlanChoice: a step plan is structured data
+ * (instruction + assigned agent per step), and round-tripping a free-text
+ * edit back into that shape reliably is more failure-prone than it's worth
+ * for a first pass. "Skip" falls back to handing the whole task to a single
+ * selected agent — orchestra mode's simpler, pre-decomposition behaviour —
+ * rather than to the original prompt the way askPlanChoice's skip does.
+ */
+export function askOrchestraPlanChoice(): Promise<OrchestraPlanChoice> {
+  if (!process.stdin.isTTY) {
+    process.stderr.write(pc.dim("  non-interactive session — running the plan\n"));
+    return Promise.resolve("accept");
+  }
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+
+    process.stderr.write(
+      "  " +
+        pc.green("[Y]") +
+        pc.dim("es, run this plan  ") +
+        pc.red("[n]") +
+        pc.dim("o, one agent instead  ") +
+        pc.dim(`(${TIMEOUT_MS / 1000}s timeout → Y): `),
+    );
+
+    let settled = false;
+    const finish = (choice: OrchestraPlanChoice): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rl.close();
+      resolve(choice);
+    };
+
+    const timer = setTimeout(() => {
+      process.stderr.write(pc.dim("Y\n"));
+      finish("accept");
+    }, TIMEOUT_MS);
+
+    rl.once("close", () => finish("accept"));
+
+    rl.once("line", (line) => {
+      const answer = line.trim().toLowerCase();
+      finish(answer === "n" || answer === "no" ? "skip" : "accept");
     });
   });
 }

@@ -232,6 +232,72 @@ describe("backend registry config", () => {
     expect(local.models).toEqual(["envmodel"]);
   });
 
+  test("the README's Codex and OpenCode example backends parse as documented", () => {
+    // Pins the exact snippet in README.md's Configuration section — if this
+    // ever drifts from what parseBackend actually accepts, this test (not a
+    // user's broken config) is where it should be caught.
+    const cfg = resolveConfig(
+      {
+        backends: [
+          {
+            id: "codex",
+            kind: "exec",
+            label: "Codex",
+            categories: ["code"],
+            priority: 8,
+            enabled: true,
+            command: "codex",
+            args: ["-a", "never", "exec", "--sandbox", "workspace-write", "{model}", "{prompt}"],
+            printArgs: ["-a", "never", "exec", "--sandbox", "read-only", "{prompt}"],
+            modelFlag: "-m",
+            supportsModelTier: false,
+            supportsContinue: false,
+            strengths: "OpenAI Codex — strong at greenfield generation and broad refactors.",
+          },
+          {
+            id: "opencode",
+            kind: "exec",
+            label: "OpenCode",
+            categories: ["code"],
+            priority: 7,
+            enabled: true,
+            command: "opencode",
+            args: ["run", "--auto", "{model}", "{continue}", "{prompt}"],
+            printArgs: ["run", "--auto", "{prompt}"],
+            modelFlag: "--model",
+            continueFlag: "--continue",
+            supportsModelTier: false,
+            supportsContinue: true,
+            strengths: "OpenCode — broad multi-provider model access, good at exploratory/open-ended tasks.",
+          },
+        ],
+      },
+      {},
+    );
+
+    const codex = exec(cfg, "codex");
+    expect(codex.args).toEqual([
+      "-a",
+      "never",
+      "exec",
+      "--sandbox",
+      "workspace-write",
+      "{model}",
+      "{prompt}",
+    ]);
+    expect(codex.printArgs).toEqual(["-a", "never", "exec", "--sandbox", "read-only", "{prompt}"]);
+    expect(codex.modelFlag).toBe("-m");
+    expect(codex.supportsModelTier).toBe(false);
+    expect(codex.supportsContinue).toBe(false);
+    expect(codex.strengths).toContain("Codex");
+
+    const opencode = exec(cfg, "opencode");
+    expect(opencode.args).toEqual(["run", "--auto", "{model}", "{continue}", "{prompt}"]);
+    expect(opencode.printArgs).toEqual(["run", "--auto", "{prompt}"]);
+    expect(opencode.continueFlag).toBe("--continue");
+    expect(opencode.supportsContinue).toBe(true);
+  });
+
   test("the local env overrides leave other chat backends alone", () => {
     const cfg = resolveConfig(
       {},
