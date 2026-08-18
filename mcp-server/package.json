@@ -1,0 +1,15 @@
+{
+  "name": "prompt-router-mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stdio MCP server exposing prompt-router's optimize+classify step as an optimize_and_classify_prompt tool, without dispatching anywhere (no Claude Code / local model / OpenRouter execution side effects).",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.23.8"
+  }
+}
