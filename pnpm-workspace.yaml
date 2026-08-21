@@ -1,2 +1,6 @@
+packages:
+  - "."
+  - "mcp-server"
+
 allowBuilds:
   esbuild: true
