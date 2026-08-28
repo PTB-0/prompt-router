@@ -64,6 +64,51 @@ export function showRouting(
   err.write("\n" + pc.dim(LINE) + "\n");
 }
 
+/**
+ * `--dry-run`'s entire output: the same routing decision `showRouting` shows,
+ * plus whether orchestra mode would engage, but to stdout and with no
+ * confirmation bar after it — the caller returns immediately once this
+ * prints, before anything is dispatched or any stats/session/log file is
+ * touched. Stdout (not stderr, unlike every other display function here)
+ * because this *is* the answer for a dry run, not a status message alongside
+ * one, so it stays script-friendly to pipe or grep.
+ */
+export function printDryRun(
+  original: string,
+  optimized: string,
+  dispatch: Dispatch,
+  detail: string,
+  cls: Classification | null,
+  wouldOrchestrate: boolean,
+): void {
+  const out = process.stdout;
+  out.write("\n" + pc.dim(LINE) + "\n");
+  out.write(pc.bold("  prompt-router") + pc.dim(" — dry run, nothing dispatched\n"));
+  out.write(pc.dim(LINE) + "\n\n");
+
+  out.write(pc.dim("  ORIGINAL\n"));
+  out.write(pc.dim("  " + original.replace(/\n/g, "\n  ")) + "\n\n");
+
+  if (optimized !== original) {
+    out.write(pc.green(pc.bold("  OPTIMIZED\n")));
+    out.write(pc.green("  " + optimized.replace(/\n/g, "\n  ")) + "\n\n");
+  }
+
+  const planNote = dispatch.planFirst ? pc.cyan(" · plan-first") : "";
+  const uncertainNote = dispatch.uncertain ? pc.yellow(" · low confidence") : "";
+  const orchestraNote = wouldOrchestrate ? pc.magenta(" · orchestra mode") : "";
+  out.write(pc.bold(`  ROUTE → ${detail}`) + planNote + uncertainNote + orchestraNote + "\n");
+  if (cls) {
+    out.write(
+      pc.dim(
+        `  (${cls.category}, complexity ${cls.complexity.toFixed(1)}, confidence ${cls.confidence.toFixed(1)})`,
+      ) + "\n",
+    );
+  }
+  out.write(pc.dim("\n  No stats, session, or log entry was written.\n"));
+  out.write(pc.dim(LINE) + "\n");
+}
+
 export function askRouteChoice(candidates: readonly Backend[]): Promise<RouteChoice> {
   // Piped/CI stdin can't answer (and its data must not be eaten as menu
   // keystrokes) — take the default immediately instead of pretending to wait.
