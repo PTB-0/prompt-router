@@ -373,10 +373,16 @@ pnpm dev "your prompt"
 
 Built test-first: every routing rule in `src/route.ts` and every heuristic in `src/heuristics.ts` is pinned by a test in `test/`. CI runs the suite on Linux and Windows, Node 18 and 22.
 
+### Releasing
+
+Publishing to npm is triggered by a GitHub Release, not by pushing to `main` — `.github/workflows/publish.yml` runs on `release: published`, reads the version straight from the release's tag (`v4.1.0` or `4.1.0`), sets `package.json`'s version to match, runs the full typecheck/test/build gate, and publishes with `npm publish --provenance`. Marking the release "pre-release" on GitHub publishes it under the `beta` npm dist-tag instead of `latest`.
+
+To cut a release: bump `package.json`'s version locally if you want the repo to match (the workflow doesn't write it back), then create a GitHub Release with a matching tag against the commit you want published. The workflow needs an `NPM_TOKEN` repo secret (an npm "Automation" token from whichever npm account owns the `prompt-router` package) — without it, the publish step fails with a 401/403 rather than publishing anything.
+
 ## Roadmap
 
 - [x] `prompt-router init` — interactive setup wizard
-- [ ] npm publish with GitHub Actions provenance
+- [x] npm publish with GitHub Actions provenance
 - [ ] Reuse [prompt-op](https://github.com/PTB-0/prompt-op)'s optimizer as a library dependency
 - [x] Per-backend capability manifests
 - [x] Orchestra mode — multi-agent task decomposition with automatic review/fix

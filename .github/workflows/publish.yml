@@ -1,0 +1,69 @@
+name: Publish to npm
+
+# Triggered by publishing a GitHub Release (drafts don't trigger this). The
+# release's tag name is the version to publish — create a release with tag
+# v4.1.0 (or 4.1.0) to publish prompt-router@4.1.0. A release marked
+# "pre-release" on GitHub publishes under the `beta` npm dist-tag instead of
+# `latest`, matching the existing 3.0.0-beta.0 publish on npm.
+on:
+  release:
+    types: [published]
+
+# id-token: write is required for `npm publish --provenance` (OIDC-signed
+# provenance attestation); contents: read is enough since this workflow never
+# pushes anything back to the repo — the release tag is the only source of
+# truth for the version, and package.json's version is only ever set
+# in-memory here for the publish step.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Set package version from the release tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '$TAG' isn't a valid semver version (expected e.g. v4.1.0 or 4.1.0)"
+            exit 1
+          fi
+          npm pkg set version="$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      # Same gate a manual publish would go through (prepublishOnly already
+      # runs these, but failing here — before touching the registry — gives a
+      # clearer error than a failed prepublishOnly mid-`npm publish`).
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: Publish
+        run: npm publish --provenance ${{ github.event.release.prerelease && '--tag beta' || '' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        run: echo "Published prompt-router@${VERSION} to npm (release ${{ github.event.release.html_url }})." >> "$GITHUB_STEP_SUMMARY"
