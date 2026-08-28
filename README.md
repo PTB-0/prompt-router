@@ -126,6 +126,7 @@ prompt-router --no-route "quick edit"             # skip everything, straight to
 prompt-router --orchestra "..."                   # force orchestra mode (see below), regardless of complexity
 prompt-router --no-orchestra "..."                # disable orchestra mode even if it would trigger automatically
 prompt-router --showdebug "..."                   # print orchestra mode's selection and verdict reasoning
+prompt-router --dry-run "..."                     # print the routing decision and exit — nothing is dispatched, no stats/session write
 prompt-router --stats                             # per-backend spend, and what the routing saved
 prompt-router --clear-session                     # forget the stored conversation
 ```
@@ -141,6 +142,8 @@ Every routed prompt shows the confirmation bar first:
 | `c` / `l` / `o` | Legacy aliases, hardwired to the backend ids `claude` / `local` / `openrouter` — kept for muscle memory, no longer shown, and a no-op if you rename or remove those backends |
 
 Only the numeric keys are advertised, because which backends are offered depends on the category and on your registry: with the default config a code prompt has one candidate (`[1] Claude Code`) and a simple question has two, since only OpenRouter declares `deep-qa`.
+
+`--dry-run` skips the confirmation bar (and everything after it) entirely: it prints the category, complexity/confidence, the chosen backend and model/effort tier, and whether plan-first or orchestra mode would engage — then exits without dispatching, without writing to `stats.json` or the session file, and without spawning anything. Useful for checking a heuristic or config change (a new backend, an edited threshold) actually routes the way you expect before it can spend anything.
 
 ## The plan-first pipeline
 

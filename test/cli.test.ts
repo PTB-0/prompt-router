@@ -854,4 +854,72 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
     },
     CLI_TIMEOUT_MS,
   );
+
+  test(
+    "--dry-run prints the route without spawning the backend or writing stats/session",
+    async () => {
+      const dir = makeTmpDir();
+      writeConfig(dir, { backends: [execBackendConfig()] });
+      const result = await runCli(dir, ["--dry-run", "please fix the bug in auth.ts"]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/dry run, nothing dispatched/);
+      expect(result.stdout).toMatch(/ROUTE → Broken Exec/);
+      // Never actually spawned: a real attempt on this nonexistent binary
+      // would surface as "failed to run" on stderr (see the missing-command
+      // test above).
+      expect(result.stderr).not.toMatch(/failed to run/);
+      expect(fs.existsSync(path.join(dir, "stats.json"))).toBe(false);
+      expect(fs.existsSync(path.join(dir, "session.json"))).toBe(false);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--dry-run reports orchestra mode when the task would trigger it automatically",
+    async () => {
+      const dir = makeTmpDir();
+      // Default config (no writeConfig call): the built-in "claude" exec
+      // backend, supportsModelTier + orchestra both on by default.
+      const result = await runCli(dir, [
+        "--dry-run",
+        "refactor auth.ts across the entire billing module in every service",
+      ]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/ROUTE → Claude Code/);
+      expect(result.stdout).toMatch(/orchestra mode/);
+      expect(fs.existsSync(path.join(dir, "stats.json"))).toBe(false);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--dry-run --no-route reports the raw hand-off without spawning it",
+    async () => {
+      const dir = makeTmpDir();
+      writeConfig(dir, { backends: [execBackendConfig()] });
+      const result = await runCli(dir, ["--dry-run", "--no-route", "quick edit"]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/dry run, nothing dispatched/);
+      expect(result.stdout).toMatch(/ROUTE → Broken Exec/);
+      expect(result.stderr).not.toMatch(/failed to run/);
+      expect(fs.existsSync(path.join(dir, "stats.json"))).toBe(false);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "--dry-run with --no-orchestra never reports orchestra mode",
+    async () => {
+      const dir = makeTmpDir();
+      const result = await runCli(dir, [
+        "--dry-run",
+        "--no-orchestra",
+        "refactor auth.ts across the entire billing module in every service",
+      ]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/ROUTE → Claude Code/);
+      expect(result.stdout).not.toMatch(/orchestra mode/);
+    },
+    CLI_TIMEOUT_MS,
+  );
 });

@@ -52,6 +52,7 @@ import {
   askOrchestraPlanChoice,
   askPlanChoice,
   askRouteChoice,
+  printDryRun,
   showDebug,
   showError,
   showOrchestraPlan,
@@ -74,6 +75,7 @@ const USAGE = `Usage: prompt-router "your prompt"
       --orchestra      force orchestra mode: agent selection + automatic review/fix loop
       --no-orchestra   disable orchestra mode even if it would trigger automatically
       --showdebug      print orchestra mode's selection and verdict reasoning
+      --dry-run        print the routing decision and exit — no dispatch, no stats/session writes
       --stats          show routing statistics
       --clear-session  forget the stored conversation
 `;
@@ -90,6 +92,7 @@ interface CliArgs {
   orchestra: boolean;
   noOrchestra: boolean;
   showDebug: boolean;
+  dryRun: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -105,6 +108,7 @@ function parseArgs(argv: string[]): CliArgs {
     orchestra: false,
     noOrchestra: false,
     showDebug: false,
+    dryRun: false,
   };
   const parts: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -115,6 +119,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (arg === "--orchestra") args.orchestra = true;
     else if (arg === "--no-orchestra") args.noOrchestra = true;
     else if (arg === "--showdebug") args.showDebug = true;
+    else if (arg === "--dry-run") args.dryRun = true;
     else if (arg === "--stats") args.showStats = true;
     else if (arg === "--clear-session") args.clear = true;
     else if (arg === "--to") {
@@ -663,6 +668,17 @@ async function main(): Promise<void> {
       showError("--no-route needs an exec backend, and none is configured");
       process.exit(1);
     }
+    if (args.dryRun) {
+      const noRouteDispatch: Dispatch = {
+        backend: handoff,
+        planFirst: false,
+        uncertain: false,
+        model: args.forceModel ?? undefined,
+        effort: args.forceEffort ?? undefined,
+      };
+      printDryRun(args.prompt, args.prompt, noRouteDispatch, routeDetail(handoff, noRouteDispatch), null, false);
+      return;
+    }
     runExec(
       handoff,
       args.prompt,
@@ -734,6 +750,23 @@ async function main(): Promise<void> {
   );
 
   let finalPrompt = cls?.optimizedPrompt ?? args.prompt;
+
+  if (args.dryRun) {
+    const execBackends = candidates.filter((b): b is ExecBackend => b.kind === "exec");
+    const complexity = cls?.complexity ?? estimateComplexity(finalPrompt);
+    const orchestraAuto =
+      config.orchestra.enabled &&
+      decision.category === "code" &&
+      complexity >= config.orchestra.complexityThreshold;
+    const wouldOrchestrate =
+      head.kind === "exec" &&
+      args.forceBackendId === null &&
+      !args.noOrchestra &&
+      (args.orchestra || orchestraAuto) &&
+      execBackends.length > 0;
+    printDryRun(args.prompt, finalPrompt, dispatch, routeDetail(head, dispatch), cls, wouldOrchestrate);
+    return;
+  }
 
   // The confirmation bar also runs for --to: forcing a backend shouldn't mean
   // an unseen LLM rewrite goes out — the rewrite still needs a chance to be
