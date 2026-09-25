@@ -1,13 +1,12 @@
-import * as sharedClient from "openrouter-chat-client";
-import type { ChatMessage, TokenUsage } from "openrouter-chat-client";
+import * as sharedClient from "./openrouterClient.js";
+import type { ChatMessage, TokenUsage } from "./openrouterClient.js";
 
-export type { ChatMessage, TokenUsage } from "openrouter-chat-client";
-export { extractSseDeltas, withModelFallback } from "openrouter-chat-client";
+export type { ChatMessage, TokenUsage } from "./openrouterClient.js";
+export { extractSseDeltas, withModelFallback } from "./openrouterClient.js";
 
-// The shared client's HTTP-Referer / X-Title are per-app so OpenRouter can
-// tell prompt-router's traffic apart from prompt-op's or anyone else's —
-// baked in here so every call site below stays exactly as it was before the
-// client moved into its own package.
+// The client's HTTP-Referer / X-Title are per-app so OpenRouter can tell
+// prompt-router's traffic apart from prompt-op's or anyone else's — baked in
+// here so every call site keeps the same ChatRequest shape.
 const APP_REFERER = "https://github.com/PTB-0/prompt-router";
 const APP_TITLE = "prompt-router";
 
