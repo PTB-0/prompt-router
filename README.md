@@ -356,7 +356,7 @@ prompt-router assumes things fail and never leaves you stranded:
 ## Privacy
 
 - **Prompt content is never logged.** Not in stats, not in the routing log.
-- `--stats` stores per-backend counts, token totals, and cost figures in a local file — still no prompt content.
+- `--stats` stores per-backend counts, token totals, and cost figures in a local file — still no prompt content. It also tracks how often the router was uncertain about a classification, how often a chat backend fell back to the next one, and average routing latency (the heuristic + optimizer/classifier call only — never the confirmation prompt's wait time or a backend's own answer time) — all local, all content-free.
 - The opt-in routing log (`logging.routingLog: true`) records timestamps, targets, and confidence flags — useful for tuning thresholds, still content-free.
 - Conversation memory (`-c`) lives in one local JSON file you can delete anytime with `--clear-session`.
 
@@ -377,7 +377,7 @@ Built test-first: every routing rule in `src/route.ts` and every heuristic in `s
 
 - [x] `prompt-router init` — interactive setup wizard
 - [ ] npm publish with GitHub Actions provenance
-- [ ] Reuse [prompt-op](https://github.com/PTB-0/prompt-op)'s optimizer as a library dependency
+- [x] Share the OpenRouter HTTP client (fetch + timeout/abort, model fallback, SSE streaming) with [prompt-op](https://github.com/PTB-0/prompt-op) via a local `openrouter-chat-client` package — each project keeps its own system prompt and optimize+classify logic; reusing prompt-op's optimizer directly would have meant a second LLM round-trip, undoing the single-call design above
 - [x] Per-backend capability manifests
 - [x] Orchestra mode — multi-agent task decomposition with automatic review/fix
 

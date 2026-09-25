@@ -15,6 +15,13 @@ export interface Stats {
   backends: Record<string, BackendStats>;
   categories: Record<string, number>;
   saved: { tokens: number; usd: number };
+  /** Prompts whose decideRoute() verdict was flagged uncertain. */
+  uncertain: number;
+  /** Prompts that only reached their serving backend after an earlier chat candidate failed. */
+  fallbacks: number;
+  /** Wall-clock time from "prompt received" to "route decided" (heuristic + optimizer/classifier
+   *  call) — never includes the confirmation prompt wait or the backend's own answer time. */
+  routingLatency: { count: number; totalMs: number };
 }
 
 export interface DispatchRecord {
@@ -27,6 +34,13 @@ export interface DispatchRecord {
   savedTokens: number;
   /** Counterfactual USD those tokens would have cost there. */
   savedUsd: number;
+  /** decideRoute()'s uncertain flag for this dispatch. Omitted counts as false. */
+  uncertain?: boolean;
+  /** How many earlier chat candidates failed before this one served. Omitted counts as 0. */
+  fallbackCount?: number;
+  /** Milliseconds from prompt received to route decided. Omitted is not counted at all
+   *  (rather than as 0ms), so the average isn't skewed by callers that don't measure it. */
+  latencyMs?: number;
 }
 
 const V1_KEYS = ["claude", "local", "openrouter"] as const;
@@ -36,7 +50,15 @@ function statsFile(dir: string): string {
 }
 
 function emptyStats(): Stats {
-  return { version: 2, backends: {}, categories: {}, saved: { tokens: 0, usd: 0 } };
+  return {
+    version: 2,
+    backends: {},
+    categories: {},
+    saved: { tokens: 0, usd: 0 },
+    uncertain: 0,
+    fallbacks: 0,
+    routingLatency: { count: 0, totalMs: 0 },
+  };
 }
 
 function toCount(value: unknown): number {
@@ -98,6 +120,15 @@ export function loadStats(dir: string): Stats {
   if (isRecord(saved)) {
     stats.saved = { tokens: toCount(saved["tokens"]), usd: toCount(saved["usd"]) };
   }
+  stats.uncertain = toCount(parsed["uncertain"]);
+  stats.fallbacks = toCount(parsed["fallbacks"]);
+  const routingLatency = parsed["routingLatency"];
+  if (isRecord(routingLatency)) {
+    stats.routingLatency = {
+      count: toCount(routingLatency["count"]),
+      totalMs: toCount(routingLatency["totalMs"]),
+    };
+  }
   return stats;
 }
 
@@ -120,6 +151,14 @@ export function recordDispatch(dir: string, record: DispatchRecord): void {
     tokens: stats.saved.tokens + record.savedTokens,
     usd: stats.saved.usd + record.savedUsd,
   };
+  if (record.uncertain) stats.uncertain += 1;
+  if ((record.fallbackCount ?? 0) > 0) stats.fallbacks += 1;
+  if (record.latencyMs !== undefined) {
+    stats.routingLatency = {
+      count: stats.routingLatency.count + 1,
+      totalMs: stats.routingLatency.totalMs + record.latencyMs,
+    };
+  }
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(statsFile(dir), JSON.stringify(stats, null, 2), "utf8");
 }
@@ -168,6 +207,13 @@ export function formatStats(stats: Stats, backends: readonly Backend[]): string 
   lines.push("");
   if (categories) lines.push(`  categories   ${categories}`);
   lines.push(`  diverted     ${diverted} of ${total} prompts`);
+  if (total > 0) {
+    const routingLine = [`uncertain ${stats.uncertain} of ${total}`, `fallback ${stats.fallbacks} of ${total}`];
+    if (stats.routingLatency.count > 0) {
+      routingLine.push(`avg routing ${Math.round(stats.routingLatency.totalMs / stats.routingLatency.count)}ms`);
+    }
+    lines.push(`  ${routingLine.join(" · ")}`);
+  }
   // The counterfactual is priced against whichever exec backend carries
   // modelPricing, so the label names that backend rather than assuming Claude.
   // With nothing priced, savings are structurally zero — say that, instead of

@@ -167,6 +167,71 @@ describe("stats v2", () => {
     expect(output).not.toContain("140");
   });
 
+  test("recordDispatch accumulates uncertain, fallback, and routing-latency telemetry", () => {
+    recordDispatch(dir, {
+      backendId: "local",
+      category: "simple-qa",
+      usage: { inputTokens: 10, outputTokens: 10, estimated: false },
+      spend: 0,
+      savedTokens: 0,
+      savedUsd: 0,
+      uncertain: true,
+      fallbackCount: 2,
+      latencyMs: 400,
+    });
+    recordDispatch(dir, {
+      backendId: "local",
+      category: "simple-qa",
+      usage: { inputTokens: 10, outputTokens: 10, estimated: false },
+      spend: 0,
+      savedTokens: 0,
+      savedUsd: 0,
+      uncertain: false,
+      fallbackCount: 0,
+      latencyMs: 200,
+    });
+
+    const stats = loadStats(dir);
+    expect(stats.uncertain).toBe(1);
+    expect(stats.fallbacks).toBe(1);
+    expect(stats.routingLatency).toEqual({ count: 2, totalMs: 600 });
+  });
+
+  test("telemetry fields default to zero when a caller omits them", () => {
+    // Older call sites (and every fixture above) don't pass uncertain,
+    // fallbackCount, or latencyMs — they must not crash or count as data.
+    recordDispatch(dir, {
+      backendId: "local",
+      category: "simple-qa",
+      usage: { inputTokens: 10, outputTokens: 10, estimated: false },
+      spend: 0,
+      savedTokens: 0,
+      savedUsd: 0,
+    });
+    const stats = loadStats(dir);
+    expect(stats.uncertain).toBe(0);
+    expect(stats.fallbacks).toBe(0);
+    expect(stats.routingLatency).toEqual({ count: 0, totalMs: 0 });
+  });
+
+  test("formatStats reports uncertain/fallback counts and average routing latency", () => {
+    recordDispatch(dir, {
+      backendId: "local",
+      category: "simple-qa",
+      usage: { inputTokens: 10, outputTokens: 10, estimated: false },
+      spend: 0,
+      savedTokens: 0,
+      savedUsd: 0,
+      uncertain: true,
+      fallbackCount: 1,
+      latencyMs: 500,
+    });
+    const output = formatStats(loadStats(dir), backends);
+    expect(output).toContain("uncertain 1 of 1");
+    expect(output).toContain("fallback 1 of 1");
+    expect(output).toContain("avg routing 500ms");
+  });
+
   test("formatStats renders cleanly on entirely empty stats", () => {
     const output = formatStats(loadStats(dir), backends);
     expect(output).not.toContain("undefined");

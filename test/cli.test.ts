@@ -52,6 +52,9 @@ interface BackendStatsEntry {
 interface StatsFile {
   backends: Record<string, BackendStatsEntry>;
   saved: { tokens: number; usd: number };
+  uncertain: number;
+  fallbacks: number;
+  routingLatency: { count: number; totalMs: number };
 }
 
 function readStats(dir: string): StatsFile {
@@ -919,6 +922,101 @@ describe("prompt-router CLI (built binary, hermetic)", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/ROUTE → Claude Code/);
       expect(result.stdout).not.toMatch(/orchestra mode/);
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "a confident classify() verdict rewrites a heuristic-undecided Turkish prompt and picks its category",
+    async () => {
+      // "yapay zeka" false-matches the WEAK_CODE_VERBS_TR "yap" stem (see
+      // heuristics.test.ts), so heuristicCategory returns null here and the
+      // network classifier is the only thing that can decide the route.
+      // Every other CLI test either skips classify() (no API key / short
+      // prompt) or feeds it a decomposition-shaped stub that fails to parse
+      // — this is the one place classify()'s real request/response path
+      // (config.openrouter.baseUrl → chatCompletion → parseClassification)
+      // actually runs end to end.
+      const classification = JSON.stringify({
+        optimized_prompt: "Yapay zeka kavramını kısaca ve basitçe açıkla.",
+        category: "simple-qa",
+        complexity: 0.1,
+        confidence: 0.95,
+      });
+      const { server, port } = await startNonStreamingStub(classification);
+      try {
+        const dir = makeTmpDir();
+        writeConfig(dir, {
+          openrouter: { baseUrl: `http://127.0.0.1:${port}` },
+          backends: [
+            chatBackendConfig({ id: "simplechat", label: "Simple Chat", categories: ["simple-qa"] }),
+          ],
+        });
+        const result = await runCli(dir, ["--dry-run", "yapay zeka nedir?"], {
+          OPENROUTER_API_KEY: "test-key",
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toMatch(/OPTIMIZED/);
+        expect(result.stdout).toContain("Yapay zeka kavramını kısaca ve basitçe açıkla.");
+        expect(result.stdout).toMatch(/ROUTE → Simple Chat/);
+        expect(result.stdout).toMatch(/\(simple-qa, complexity 0\.1, confidence 0\.9\)/);
+      } finally {
+        server.close();
+      }
+    },
+    CLI_TIMEOUT_MS,
+  );
+
+  test(
+    "a real dispatch records uncertain/fallback/latency telemetry that --stats then reports",
+    async () => {
+      // classify() runs against its own (non-streaming) stub and returns a
+      // low-confidence verdict, so decideRoute flags this uncertain. The
+      // first chat candidate (deadchat, nothing listens on that port) fails
+      // its dispatch with ECONNREFUSED, so the second (livechat) serves
+      // after one fallback — proving fallbackCount is counted from real loop
+      // behaviour, not just threaded through as a constant.
+      const classification = JSON.stringify({
+        optimized_prompt: "what year is it currently",
+        category: "simple-qa",
+        complexity: 0.1,
+        confidence: 0.3,
+      });
+      const [classifyStub, chatStub] = await Promise.all([
+        startNonStreamingStub(classification),
+        startStubServer(),
+      ]);
+      try {
+        const dir = makeTmpDir();
+        writeConfig(dir, {
+          openrouter: { baseUrl: `http://127.0.0.1:${classifyStub.port}` },
+          backends: [
+            chatBackendConfig({ id: "deadchat", priority: 10, baseUrl: "http://127.0.0.1:1" }),
+            chatBackendConfig({
+              id: "livechat",
+              priority: 5,
+              baseUrl: `http://127.0.0.1:${chatStub.port}`,
+            }),
+          ],
+        });
+        const prompt = "what year is it currently";
+        const result = await runCli(dir, [prompt], { OPENROUTER_API_KEY: "test-key" });
+        expect(result.status).toBe(0);
+
+        const stats = readStats(dir);
+        expect(stats.uncertain).toBe(1);
+        expect(stats.fallbacks).toBe(1);
+        expect(stats.routingLatency.count).toBe(1);
+        expect(stats.routingLatency.totalMs).toBeGreaterThanOrEqual(0);
+
+        const statsResult = await runCli(dir, ["--stats"]);
+        expect(statsResult.stdout).toMatch(/uncertain 1 of 1/);
+        expect(statsResult.stdout).toMatch(/fallback 1 of 1/);
+        expect(statsResult.stdout).toMatch(/avg routing \d+ms/);
+      } finally {
+        classifyStub.server.close();
+        chatStub.server.close();
+      }
     },
     CLI_TIMEOUT_MS,
   );

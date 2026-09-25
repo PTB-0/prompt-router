@@ -35,6 +35,21 @@ describe("heuristicCategory", () => {
     expect(heuristicCategory("liderler zirvesini özetle", inProject)).toBeNull();
   });
 
+  // The TR verb/artifact stems are anchored on the left only (see the
+  // STRONG/WEAK_CODE_VERBS_TR comment) so a conjugated form like "düzeltir"
+  // still matches. The trade-off: an unrelated word that happens to start
+  // with the same letters — "kodaman" (tycoon), "yapay" (artificial), "yaz"
+  // (also "summer") — false-matches too. That never misroutes to "code"
+  // (verb+artifact, or a strong verb inside a project, is still required);
+  // the observable effect is narrower — the "?" simple-qa shortcut below is
+  // skipped and the prompt falls through to the paid classifier instead,
+  // which is the safe direction for a heuristic to be wrong in.
+  test("turkish stems without a right boundary defeat the simple-qa shortcut, not the code gate", () => {
+    expect(heuristicCategory("kodaman kim?", inProject)).toBeNull();
+    expect(heuristicCategory("yapay zeka nedir?", noProject)).toBeNull();
+    expect(heuristicCategory("yaz tatili ne zaman başlıyor?", noProject)).toBeNull();
+  });
+
   test("abbreviations, domains, and emails are not file references", () => {
     expect(heuristicCategory("write an essay about the U.S. economy", noProject)).toBeNull();
     expect(heuristicCategory("add example.com to my bookmarks", noProject)).toBeNull();

@@ -347,6 +347,7 @@ async function runExecRoute(
   category: Category,
   config: RouterConfig,
   args: CliArgs,
+  routingLatencyMs: number,
 ): Promise<never> {
   const finalPrompt = await maybeAttachPlan(prompt, dispatch.planFirst, config);
 
@@ -359,6 +360,8 @@ async function runExecRoute(
     spend: 0,
     savedTokens: 0,
     savedUsd: 0,
+    uncertain: dispatch.uncertain,
+    latencyMs: routingLatencyMs,
   });
   logRouting(config, backend.id, dispatch);
   runExec(backend, finalPrompt, args.continueSession, dispatch.model, dispatch.effort);
@@ -390,6 +393,7 @@ async function runOrchestraRoute(
   cls: Classification | null,
   config: RouterConfig,
   args: CliArgs,
+  routingLatencyMs: number,
 ): Promise<never> {
   const dir = configDir();
   const candidates = toAgentCandidates(execBackends);
@@ -402,6 +406,8 @@ async function runOrchestraRoute(
       spend: 0,
       savedTokens: 0,
       savedUsd: 0,
+      uncertain: dispatch.uncertain,
+      latencyMs: routingLatencyMs,
     });
     logRouting(config, backend.id, dispatch);
     const outcome = spawnExecInteractive(backend, text, args.continueSession, dispatch.model, dispatch.effort);
@@ -533,6 +539,7 @@ async function runChatRoute(
   cls: Classification | null,
   config: RouterConfig,
   args: CliArgs,
+  routingLatencyMs: number,
 ): Promise<void> {
   const dir = configDir();
   const history = args.continueSession ? loadSession(dir) : [];
@@ -557,10 +564,14 @@ async function runChatRoute(
     ...chatCandidates,
     ...remainingChatBackends(config.backends, new Set(chatCandidates.map((b) => b.id))),
   ];
+  // Counts every earlier candidate this loop moved past (missing key, probe
+  // down, or a failed dispatch) — 0 means the very first attempt served.
+  let fallbackCount = 0;
   for (const backend of attempts) {
     const apiKey = backend.apiKeyEnv ? process.env[backend.apiKeyEnv] : undefined;
     if (backend.apiKeyEnv && !apiKey) {
       showPassThrough(`${backend.label}: no ${backend.apiKeyEnv} — trying the next backend`);
+      fallbackCount++;
       continue;
     }
 
@@ -570,6 +581,7 @@ async function runChatRoute(
       stopSpinner();
       if (!up) {
         showPassThrough(`${backend.label} unavailable — trying the next backend`);
+        fallbackCount++;
         continue;
       }
     }
@@ -584,6 +596,7 @@ async function runChatRoute(
     });
     if (!attempt) {
       showPassThrough(`${backend.label} failed — trying the next backend`);
+      fallbackCount++;
       continue;
     }
 
@@ -600,6 +613,9 @@ async function runChatRoute(
       spend: attempt.spend,
       savedTokens,
       savedUsd,
+      uncertain: decision.uncertain,
+      fallbackCount,
+      latencyMs: routingLatencyMs,
     });
     logRouting(config, backend.id, dispatch);
 
@@ -633,7 +649,7 @@ async function runChatRoute(
     config,
     args,
   );
-  await runExecRoute(handoff, prompt, handoffDispatch, decision.category, config, args);
+  await runExecRoute(handoff, prompt, handoffDispatch, decision.category, config, args, routingLatencyMs);
 }
 
 async function main(): Promise<void> {
@@ -688,6 +704,7 @@ async function main(): Promise<void> {
     );
   }
 
+  const routingStartedAt = Date.now();
   const heuristic = heuristicCategory(args.prompt, { inCodeProject: detectCodeProject() });
 
   // Trivially short prompts skip the paid optimizer call but still get routed:
@@ -705,6 +722,11 @@ async function main(): Promise<void> {
     confidenceThreshold: config.thresholds.confidence,
     planComplexityThreshold: config.thresholds.planComplexity,
   });
+  // Stops at the route decision on purpose — never includes the confirmation
+  // prompt's wait time or the backend's own answer/exec time, so it stays a
+  // measure of routing overhead (heuristic + optimizer/classifier call) and
+  // nothing a human paused on skews it.
+  const routingLatencyMs = Date.now() - routingStartedAt;
 
   let candidates = selectCandidates(decision.category, config.backends);
   if (args.forceBackendId) {
@@ -808,14 +830,14 @@ async function main(): Promise<void> {
       !explicitBackend && !args.noOrchestra && (args.orchestra || orchestraAuto) && execBackends.length > 0;
 
     if (useOrchestra) {
-      await runOrchestraRoute(execBackends, finalPrompt, decision, cls, config, args);
+      await runOrchestraRoute(execBackends, finalPrompt, decision, cls, config, args, routingLatencyMs);
     } else {
-      await runExecRoute(head, finalPrompt, dispatch, decision.category, config, args);
+      await runExecRoute(head, finalPrompt, dispatch, decision.category, config, args, routingLatencyMs);
     }
   } else {
     // runChatRoute records the backend that actually answers, since its
     // fallback chain can land somewhere other than the head candidate.
-    await runChatRoute(candidates, dispatch, finalPrompt, decision, cls, config, args);
+    await runChatRoute(candidates, dispatch, finalPrompt, decision, cls, config, args, routingLatencyMs);
   }
 }
 
