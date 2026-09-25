@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -60,5 +60,19 @@ describe("session", () => {
     const dir = tempDir();
     writeFileSync(join(dir, "session.json"), "{broken", "utf8");
     expect(loadSession(dir)).toEqual([]);
+  });
+});
+
+// POSIX permission bits only; Windows ACLs aren't expressed through mode.
+describe.skipIf(process.platform === "win32")("session file permissions", () => {
+  test("the conversation file is owner-only, even if it already existed world-readable", () => {
+    const dir = tempDir();
+    const file = join(dir, "session.json");
+    writeFileSync(file, "[]");
+    chmodSync(file, 0o644);
+
+    appendToSession(dir, [{ role: "user", content: "secret" }], 10);
+
+    expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 });

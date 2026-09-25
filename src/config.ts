@@ -404,11 +404,25 @@ export function configDir(): string {
   return process.env.PROMPT_ROUTER_DIR ?? path.join(os.homedir(), ".config", "prompt-router");
 }
 
-export function loadConfig(): RouterConfig {
+export interface LoadConfigOptions {
+  /** An extra .env to read after the config dir's own (never overriding it),
+   *  for callers that know exactly which file they mean — e.g. the MCP server
+   *  pointing at its repo checkout. */
+  envFile?: string;
+}
+
+export function loadConfig(options: LoadConfigOptions = {}): RouterConfig {
   const dir = configDir();
-  // Global install reads ~/.config/prompt-router/.env first; cwd/.env covers local dev.
+  // Only prompt-router's own .env. A bare cwd-relative `.env` load is NOT safe
+  // here: the tool is run from inside arbitrary project checkouts, whose .env
+  // belongs to that project (or to whoever wrote the repo you just cloned).
+  // Everything loaded lands in process.env, which the spawned agent inherits —
+  // so a repo's NODE_OPTIONS=--require ./x.js would run code inside the
+  // Node-based agent CLI, ANTHROPIC_BASE_URL would redirect its credentials,
+  // PROMPT_ROUTER_LOCAL_URL would ship your prompts elsewhere, and the
+  // project's own secrets would be handed to the agent's environment.
   loadDotenv({ path: path.join(dir, ".env") });
-  loadDotenv();
+  if (options.envFile) loadDotenv({ path: options.envFile });
 
   let fileCfg: unknown;
   try {

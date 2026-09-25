@@ -37,6 +37,22 @@ export function mergeEnvKey(existingText: string, apiKey: string): string {
   return lines.join("\n") + "\n";
 }
 
+/** Writes the key into `<dir>/.env` (other lines preserved), owner-only. */
+export function writeEnvKey(dir: string, apiKey: string): void {
+  const envPath = path.join(dir, ".env");
+  let envText = "";
+  try {
+    envText = fs.readFileSync(envPath, "utf8");
+  } catch {
+    // no .env yet
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(envPath, mergeEnvKey(envText, apiKey), { encoding: "utf8", mode: 0o600 });
+  // `mode` only applies when the file is created; tighten one an earlier
+  // version (or a hand-made one) left world-readable.
+  fs.chmodSync(envPath, 0o600);
+}
+
 /** The local-model answers — the only part of the wizard that branches. */
 export interface InitAnswers {
   /** null when the user declined a local model. */
@@ -259,18 +275,11 @@ export async function runInit(): Promise<void> {
     timeoutMs,
   };
 
-  fs.mkdirSync(dir, { recursive: true });
+  // Owner-only: the directory holds the API key and full conversation history.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(config, null, 2) + "\n", "utf8");
 
-  if (apiKey) {
-    let envText = "";
-    try {
-      envText = fs.readFileSync(path.join(dir, ".env"), "utf8");
-    } catch {
-      // no .env yet
-    }
-    fs.writeFileSync(path.join(dir, ".env"), mergeEnvKey(envText, apiKey), "utf8");
-  }
+  if (apiKey) writeEnvKey(dir, apiKey);
 
   process.stdout.write(
     pc.bold("\n✓ saved to ") +

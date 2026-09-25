@@ -1,5 +1,8 @@
-import { describe, expect, test } from "vitest";
-import { resolveConfig } from "../src/config.js";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { afterEach, describe, expect, test } from "vitest";
+import { loadConfig, resolveConfig } from "../src/config.js";
 import type { ChatBackend, ExecBackend } from "../src/types.js";
 
 describe("resolveConfig", () => {
@@ -305,5 +308,56 @@ describe("backend registry config", () => {
     );
     expect(chat(cfg, "openrouter").baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(chat(cfg, "openrouter").models).not.toContain("envmodel");
+  });
+});
+
+describe("loadConfig .env sources", () => {
+  const CWD_VAR = "PROMPT_ROUTER_TEST_FROM_CWD";
+  const EXPLICIT_VAR = "PROMPT_ROUTER_TEST_FROM_ENVFILE";
+  const originalCwd = process.cwd();
+  const originalDir = process.env.PROMPT_ROUTER_DIR;
+  const tmpDirs: string[] = [];
+
+  function tmp(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prompt-router-cfg-"));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    if (originalDir === undefined) delete process.env.PROMPT_ROUTER_DIR;
+    else process.env.PROMPT_ROUTER_DIR = originalDir;
+    delete process.env[CWD_VAR];
+    delete process.env[EXPLICIT_VAR];
+    for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("never loads the .env of the directory it is run from", () => {
+    // The project a user runs prompt-router in owns that .env — and whatever
+    // lands in process.env is inherited by the spawned agent.
+    process.env.PROMPT_ROUTER_DIR = tmp();
+    const project = tmp();
+    fs.writeFileSync(path.join(project, ".env"), `${CWD_VAR}=leaked\nNODE_OPTIONS=--require ./evil.js\n`);
+    const nodeOptionsBefore = process.env.NODE_OPTIONS;
+    process.chdir(project);
+
+    loadConfig();
+
+    expect(process.env[CWD_VAR]).toBeUndefined();
+    expect(process.env.NODE_OPTIONS).toBe(nodeOptionsBefore);
+  });
+
+  test("loads an explicitly named envFile, without overriding the config dir's own", () => {
+    const configDirPath = tmp();
+    process.env.PROMPT_ROUTER_DIR = configDirPath;
+    fs.writeFileSync(path.join(configDirPath, ".env"), `${EXPLICIT_VAR}=from-config-dir\n`);
+    const extra = path.join(tmp(), ".env");
+    fs.writeFileSync(extra, `${EXPLICIT_VAR}=from-envfile\n${CWD_VAR}=from-envfile\n`);
+
+    loadConfig({ envFile: extra });
+
+    expect(process.env[EXPLICIT_VAR]).toBe("from-config-dir");
+    expect(process.env[CWD_VAR]).toBe("from-envfile");
   });
 });

@@ -7,15 +7,17 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(__dirname, '..');
 
-// prompt-router's own config loader also reads a plain `.env` from
-// `process.cwd()` (`loadDotenv()` with no path — see src/config.ts), so we
-// chdir to the repo root ourselves rather than relying on whatever cwd the
-// MCP client happens to spawn us with.
-process.chdir(repoRoot);
+// prompt-router's config loader never reads a cwd-relative `.env` (see
+// loadConfig in src/config.ts), so the repo checkout's own `.env` is passed
+// explicitly — found regardless of whatever cwd the MCP client spawns us with.
+const repoEnvFile = path.join(repoRoot, '.env');
 
 // Same length threshold the CLI uses to skip the paid optimizer call for
 // trivially short input (see MIN_PROMPT_LENGTH in src/index.ts).
 const MIN_PROMPT_LENGTH = 10;
+// Any MCP client can call this tool without a human in the loop, so cap the
+// input: every call sends the whole text to OpenRouter on the configured key.
+const MAX_PROMPT_LENGTH = 50_000;
 
 let loadConfig;
 let classify;
@@ -43,7 +45,10 @@ server.registerTool(
       'unlike the full prompt-router CLI, it never dispatches to Claude Code, a local model, or OpenRouter for ' +
       'an answer. Use it to decide how a task should be framed or where it belongs, not to answer it.',
     inputSchema: {
-      prompt: z.string().describe('The raw prompt/text to optimize and classify'),
+      prompt: z
+        .string()
+        .max(MAX_PROMPT_LENGTH)
+        .describe('The raw prompt/text to optimize and classify'),
     },
   },
   async ({ prompt }) => {
@@ -58,7 +63,7 @@ server.registerTool(
       };
     }
 
-    const config = loadConfig();
+    const config = loadConfig({ envFile: repoEnvFile });
     if (!config.openrouter.apiKey) {
       return {
         content: [{ type: 'text', text: 'prompt-router has no OPENROUTER_API_KEY configured.' }],

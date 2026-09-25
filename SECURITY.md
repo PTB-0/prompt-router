@@ -36,3 +36,11 @@ OpenRouter and, optionally, a local model server or the Claude Code CLI — it
 does not otherwise transmit data to third parties. See the
 [Privacy section of the README](README.md#privacy) for what is and isn't
 logged locally.
+
+It never reads a `.env` from the directory you run it in — that file belongs
+to the project, and anything loaded would be inherited by the agent it
+spawns. When prompt-router creates its config directory it is owner-only
+(`0700`), and the files holding secrets or conversation text (`.env`,
+`session.json`) are written `0600`. A prompt handed to an agent CLI is always
+passed as a positional argument, never as something the CLI could parse as an
+option.

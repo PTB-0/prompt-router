@@ -27,8 +27,11 @@ export function loadSession(dir: string): SessionMessage[] {
 
 export function appendToSession(dir: string, messages: SessionMessage[], max: number): void {
   const history = [...loadSession(dir), ...messages].slice(-max);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(sessionFile(dir), JSON.stringify(history, null, 2), "utf8");
+  // Owner-only: this is the full text of the conversation.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = sessionFile(dir);
+  fs.writeFileSync(file, JSON.stringify(history, null, 2), { encoding: "utf8", mode: 0o600 });
+  fs.chmodSync(file, 0o600);
 }
 
 export function clearSession(dir: string): void {

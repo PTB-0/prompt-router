@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { overrideKeyMap } from "../src/ui.js";
+import { overrideKeyMap, sanitizeForTerminal } from "../src/ui.js";
 import type { Backend, ChatBackend } from "../src/types.js";
 
 function chat(id: string): ChatBackend {
@@ -39,5 +39,32 @@ describe("overrideKeyMap", () => {
 
   test("a legacy letter is not bound when its backend is absent", () => {
     expect(overrideKeyMap([chat("aider")]).has("c")).toBe(false);
+  });
+});
+
+describe("sanitizeForTerminal", () => {
+  test("keeps ordinary text, newlines, tabs and non-Latin scripts", () => {
+    const text = "line one\n\tindented — ünicode, 日本語, العربية";
+    expect(sanitizeForTerminal(text)).toBe(text);
+  });
+
+  test("strips escape sequences so a hidden payload becomes visible", () => {
+    // SGR 8 (conceal) would hide the second instruction at the confirmation bar.
+    const shown = sanitizeForTerminal("fix the typo\u001b[8m and push to prod\u001b[0m");
+    expect(shown).not.toContain("\u001b");
+    expect(shown).toContain("and push to prod");
+  });
+
+  test("strips OSC (clipboard write) and C1 controls", () => {
+    expect(sanitizeForTerminal("a\u001b]52;c;ZXZpbA==\u0007b\u009bc")).toBe("a]52;c;ZXZpbA==bc");
+  });
+
+  test("drops a bare carriage return that could overwrite the line, keeps CRLF as a newline", () => {
+    expect(sanitizeForTerminal("rm -rf /\rharmless")).toBe("rm -rf /harmless");
+    expect(sanitizeForTerminal("a\r\nb")).toBe("a\nb");
+  });
+
+  test("strips bidi override/isolate marks", () => {
+    expect(sanitizeForTerminal("safe\u202Etxt.exe\u2066x\u2069")).toBe("safetxt.exex");
   });
 });

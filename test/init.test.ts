@@ -1,6 +1,9 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { describe, expect, test } from "vitest";
 import { defaultBackends } from "../src/config.js";
-import { buildInitConfig, mergeEnvKey } from "../src/init.js";
+import { buildInitConfig, mergeEnvKey, writeEnvKey } from "../src/init.js";
 import type { Backend, ChatBackend } from "../src/types.js";
 
 function localOf(backends: Backend[]): ChatBackend | undefined {
@@ -119,4 +122,39 @@ describe("buildInitConfig", () => {
     const existing = defaultBackends().filter((b) => b.id !== "local");
     expect(localOf(buildInitConfig(declined, existing).backends)).toBeUndefined();
   });
+});
+
+describe("writeEnvKey", () => {
+  test("keeps other lines and replaces the key", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prompt-router-init-"));
+    try {
+      fs.writeFileSync(path.join(dir, ".env"), "OTHER=1\nOPENROUTER_API_KEY=old\n");
+      writeEnvKey(dir, "new");
+      expect(fs.readFileSync(path.join(dir, ".env"), "utf8")).toBe("OTHER=1\nOPENROUTER_API_KEY=new\n");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // POSIX permission bits only; Windows ACLs aren't expressed through mode.
+  test.skipIf(process.platform === "win32")(
+    "leaves the API key owner-only, even over a world-readable .env",
+    () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prompt-router-init-"));
+      try {
+        const envPath = path.join(dir, ".env");
+        fs.writeFileSync(envPath, "OPENROUTER_API_KEY=old\n");
+        fs.chmodSync(envPath, 0o644);
+        writeEnvKey(dir, "sk-or-v1-secret");
+        expect(fs.statSync(envPath).mode & 0o777).toBe(0o600);
+
+        const fresh = path.join(dir, "fresh");
+        writeEnvKey(fresh, "sk-or-v1-secret");
+        expect(fs.statSync(path.join(fresh, ".env")).mode & 0o777).toBe(0o600);
+        expect(fs.statSync(fresh).mode & 0o777).toBe(0o700);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

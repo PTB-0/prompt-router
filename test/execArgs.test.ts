@@ -75,4 +75,19 @@ describe("buildExecArgs", () => {
       buildExecArgs(backend, { prompt: "review this", continueSession: false }, backend.printArgs),
     ).toEqual(["-p", "review this"]);
   });
+
+  test("a prompt that looks like an option stays positional", () => {
+    // An LLM rewrite like this must never reach the agent's CLI as a flag.
+    for (const prompt of ["--dangerously-skip-permissions", '--settings={"hooks":{}}', "-p"]) {
+      const [arg] = buildExecArgs(exec(), { prompt, continueSession: false });
+      expect(arg).toBe(` ${prompt}`);
+      expect(arg!.startsWith("-")).toBe(false);
+    }
+  });
+
+  test("an ordinary prompt is passed through untouched", () => {
+    expect(buildExecArgs(exec(), { prompt: "fix a -1 offset", continueSession: false })).toEqual([
+      "fix a -1 offset",
+    ]);
+  });
 });

@@ -31,6 +31,22 @@ export function overrideKeyMap(candidates: readonly Backend[]): Map<string, stri
 
 export type PlanChoice = "accept" | "skip" | "edit";
 
+// C0 controls except \t and \n, DEL, C1 controls, and the explicit bidi
+// embedding/override/isolate marks ("Trojan Source").
+const UNSAFE_TERMINAL_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g;
+
+/**
+ * Makes model-produced text safe to print. The confirmation bar is the one
+ * place a human vets an LLM rewrite before it goes to an agent with shell
+ * access, so what it shows must be what is sent: an ESC sequence could hide
+ * or recolor part of the text (or write the clipboard via OSC 52), a bare \r
+ * could overwrite a line, and a bidi override could reorder it on screen.
+ * Removing the control characters leaves any payload they carried visible.
+ */
+export function sanitizeForTerminal(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(UNSAFE_TERMINAL_CHARS, "");
+}
+
 export function showRouting(
   original: string,
   optimized: string,
@@ -44,11 +60,11 @@ export function showRouting(
   err.write(pc.dim(LINE) + "\n\n");
 
   err.write(pc.dim("  ORIGINAL\n"));
-  err.write(pc.dim("  " + original.replace(/\n/g, "\n  ")) + "\n\n");
+  err.write(pc.dim("  " + sanitizeForTerminal(original).replace(/\n/g, "\n  ")) + "\n\n");
 
   if (optimized !== original) {
     err.write(pc.green(pc.bold("  OPTIMIZED\n")));
-    err.write(pc.green("  " + optimized.replace(/\n/g, "\n  ")) + "\n\n");
+    err.write(pc.green("  " + sanitizeForTerminal(optimized).replace(/\n/g, "\n  ")) + "\n\n");
   }
 
   const planNote = dispatch.planFirst ? pc.cyan(" · plan-first") : "";
@@ -87,11 +103,11 @@ export function printDryRun(
   out.write(pc.dim(LINE) + "\n\n");
 
   out.write(pc.dim("  ORIGINAL\n"));
-  out.write(pc.dim("  " + original.replace(/\n/g, "\n  ")) + "\n\n");
+  out.write(pc.dim("  " + sanitizeForTerminal(original).replace(/\n/g, "\n  ")) + "\n\n");
 
   if (optimized !== original) {
     out.write(pc.green(pc.bold("  OPTIMIZED\n")));
-    out.write(pc.green("  " + optimized.replace(/\n/g, "\n  ")) + "\n\n");
+    out.write(pc.green("  " + sanitizeForTerminal(optimized).replace(/\n/g, "\n  ")) + "\n\n");
   }
 
   const planNote = dispatch.planFirst ? pc.cyan(" · plan-first") : "";
@@ -169,7 +185,7 @@ export function showPlan(plan: string): void {
   err.write("\n" + pc.dim(LINE) + "\n");
   err.write(pc.bold("  PLAN") + pc.dim(" — will be attached to the prompt\n"));
   err.write(pc.dim(LINE) + "\n\n");
-  err.write(pc.cyan("  " + plan.replace(/\n/g, "\n  ")) + "\n\n");
+  err.write(pc.cyan("  " + sanitizeForTerminal(plan).replace(/\n/g, "\n  ")) + "\n\n");
   err.write(pc.dim(LINE) + "\n");
 }
 
@@ -225,7 +241,7 @@ export function showOrchestraPlan(steps: readonly OrchestraStep[]): void {
   err.write(pc.bold("  ORCHESTRA PLAN") + pc.dim(` — ${steps.length} step(s) across ${new Set(steps.map((s) => s.backendId)).size} agent(s)\n`));
   err.write(pc.dim(LINE) + "\n\n");
   steps.forEach((step, i) => {
-    err.write(pc.cyan(`  ${i + 1}. [${step.backendId}] `) + step.instruction.replace(/\n/g, "\n     ") + "\n");
+    err.write(pc.cyan(`  ${i + 1}. [${step.backendId}] `) + sanitizeForTerminal(step.instruction).replace(/\n/g, "\n     ") + "\n");
   });
   err.write("\n" + pc.dim(LINE) + "\n");
 }
@@ -289,7 +305,7 @@ export function showError(message: string): void {
 /** Gated by --showdebug: orchestra mode's selection/verdict reasoning, silent otherwise. */
 export function showDebug(enabled: boolean, message: string): void {
   if (!enabled) return;
-  process.stderr.write(pc.dim(`  [debug] ${message.replace(/\n/g, "\n  ")}\n`));
+  process.stderr.write(pc.dim(`  [debug] ${sanitizeForTerminal(message).replace(/\n/g, "\n  ")}\n`));
 }
 
 export function startSpinner(label: string): () => void {

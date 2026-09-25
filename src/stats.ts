@@ -159,7 +159,7 @@ export function recordDispatch(dir: string, record: DispatchRecord): void {
       totalMs: stats.routingLatency.totalMs + record.latencyMs,
     };
   }
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(statsFile(dir), JSON.stringify(stats, null, 2), "utf8");
 }
 

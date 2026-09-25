@@ -53,6 +53,7 @@ import {
   askPlanChoice,
   askRouteChoice,
   printDryRun,
+  sanitizeForTerminal,
   showDebug,
   showError,
   showOrchestraPlan,
@@ -254,21 +255,29 @@ function parseEditorCommand(spec: string): { command: string; args: string[] } {
 }
 
 function openInEditor(content: string): string {
-  const tmpFile = path.join(os.tmpdir(), `prompt-router-${Date.now()}.txt`);
-  fs.writeFileSync(tmpFile, content, "utf8");
+  // A fresh owner-only directory, not a guessable name in the shared temp dir:
+  // `prompt-router-<timestamp>.txt` there could be pre-created as a symlink by
+  // another local user (writeFileSync follows it), and a default-mode file
+  // leaves the prompt/plan readable by them while the editor is open.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prompt-router-"));
+  const tmpFile = path.join(tmpDir, "prompt.txt");
+  try {
+    fs.writeFileSync(tmpFile, content, { encoding: "utf8", mode: 0o600 });
 
-  const editorSpec = process.env.EDITOR ?? (process.platform === "win32" ? "notepad" : "vi");
-  const { command: editor, args: editorArgs } = parseEditorCommand(editorSpec);
-  const useShell = process.platform === "win32";
-  spawnSync(
-    editor,
-    toShellArgs([...editorArgs, tmpFile], useShell, useShell && isBatchShim(editor)),
-    { stdio: "inherit", shell: useShell },
-  );
+    const editorSpec = process.env.EDITOR ?? (process.platform === "win32" ? "notepad" : "vi");
+    const { command: editor, args: editorArgs } = parseEditorCommand(editorSpec);
+    const useShell = process.platform === "win32";
+    spawnSync(
+      editor,
+      toShellArgs([...editorArgs, tmpFile], useShell, useShell && isBatchShim(editor)),
+      { stdio: "inherit", shell: useShell },
+    );
 
-  const edited = fs.readFileSync(tmpFile, "utf8").trim();
-  fs.unlinkSync(tmpFile);
-  return edited || content;
+    const edited = fs.readFileSync(tmpFile, "utf8").trim();
+    return edited || content;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 function logRouting(config: RouterConfig, backendId: string, dispatch: Dispatch): void {
@@ -506,12 +515,12 @@ async function runOrchestraRoute(
     }
     if (verdict.status === "unknown") {
       showError(`orchestra: ${reviewer.label} did not return a clear verdict — stopping the review loop`);
-      process.stderr.write(verdict.raw + "\n");
+      process.stderr.write(sanitizeForTerminal(verdict.raw) + "\n");
       break;
     }
 
     process.stderr.write("\n" + pc.yellow("  orchestra: issues found") + "\n");
-    process.stderr.write(pc.dim("  " + verdict.notes.replace(/\n/g, "\n  ")) + "\n\n");
+    process.stderr.write(pc.dim("  " + sanitizeForTerminal(verdict.notes).replace(/\n/g, "\n  ")) + "\n\n");
 
     if (round >= config.orchestra.maxFixRounds) {
       showPassThrough(`orchestra: ${config.orchestra.maxFixRounds} fix round(s) used — stopping, review by hand`);
@@ -590,7 +599,7 @@ async function runChatRoute(
       messages,
       timeoutMs,
       apiKey,
-      onDelta: (text) => process.stdout.write(text),
+      onDelta: (text) => process.stdout.write(sanitizeForTerminal(text)),
       onModelSwitch: () =>
         process.stdout.write(pc.dim("\n[stream interrupted — retrying with another model]\n")),
     });
